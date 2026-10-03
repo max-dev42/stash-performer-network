@@ -1,0 +1,59 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Version from tag and manifest
+        id: version
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          manifest=$(sed -n 's/^version:[[:space:]]*//p' plugin/stash-performer-network.yml)
+          if [ "$version" != "$manifest" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match version $manifest in plugin/stash-performer-network.yml"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Release notes from CHANGELOG.md
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          awk -v v="$VERSION" '
+            /^## / { if (found) exit; found = ($2 == v || $2 == "[" v "]"); next }
+            found { print }
+          ' CHANGELOG.md | sed -e '/./,$!d' > notes.md
+          if ! grep -q '[^[:space:]]' notes.md; then
+            echo "::error::No section for $VERSION in CHANGELOG.md"
+            exit 1
+          fi
+          cat notes.md
+
+      - name: Plugin zip and checksum
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          zip_name="stash-performer-network-$VERSION.zip"
+          (cd plugin && zip -qrX "../$zip_name" .)
+          sha256sum "$zip_name" > "$zip_name.sha256"
+          cat "$zip_name.sha256"
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          zip_name="stash-performer-network-$VERSION.zip"
+          gh release create "$GITHUB_REF_NAME" "$zip_name" "$zip_name.sha256" \
+            --verify-tag --title "$VERSION" --notes-file notes.md

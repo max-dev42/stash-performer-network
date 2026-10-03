@@ -1,0 +1,27 @@
+/* Just enough of Stash's dark Bootstrap look for the demo page and the README screenshots. */
+:root { color-scheme: dark; }
+* { box-sizing: border-box; }
+body { margin: 0; background: #202b33; color: #f5f8fa; font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+a { color: #48aff0; text-decoration: none; }
+.demo-nav { height: 3rem; display: flex; align-items: center; gap: 1.6rem; padding: 0 1.2rem; background: #30404d; color: #f5f8fa; }
+.demo-brand { font-weight: 600; margin-right: 1rem; }
+.demo-active { background: #394b59; padding: 0.35rem 0.7rem; border-radius: 3px; }
+.demo-note { margin-left: auto; color: #a7b6c2; font-size: 0.8rem; }
+.demo-main { padding: 0.5rem 15px 0; }
+.spn-page { height: calc(100vh - 3.5rem) !important; }
+h4, h5 { font-weight: 500; }
+.form-control { display: block; width: 100%; padding: 0.25rem 0.5rem; font-size: 0.875rem; color: #f5f8fa; background: #394b59; border: 1px solid #5c7080; border-radius: 3px; }
+.mt-1 { margin-top: 0.25rem; }
+.custom-control { display: flex; align-items: center; gap: 0.4rem; min-height: 1.4rem; }
+.custom-control-input { margin: 0; accent-color: #137cbd; }
+.custom-control-label { margin: 0; }
+.custom-range { width: 100%; accent-color: #137cbd; }
+label { display: inline-block; margin-bottom: 0.25rem; }
+fieldset { margin: 0; }
+.btn { display: inline-block; padding: 0.3rem 0.65rem; font-size: 0.875rem; border: 1px solid transparent; border-radius: 3px; color: #fff; background: #394b59; cursor: pointer; }
+.btn-sm { padding: 0.2rem 0.5rem; font-size: 0.8rem; }
+.btn-primary { background: #137cbd; }
+.btn-secondary { background: #5c7080; }
+.btn-danger { background: #db3737; }
+.btn-link { background: none; color: #48aff0; }
+.p-0 { padding: 0 !important; }

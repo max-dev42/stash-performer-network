@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Performer network (demo)</title>
+  <base href="/">
+  <link rel="stylesheet" href="harness.css">
+  <link rel="stylesheet" href="plugin-files/stash-performer-network.css">
+</head>
+<body>
+  <!-- Stand-in for Stash's navbar: the demo runs the plugin page without Stash's UI. -->
+  <nav class="demo-nav"><span class="demo-brand">Stash</span><span>Scenes</span><span>Performers</span><span>Studios</span><span class="demo-active">Network</span><span class="demo-note">demo · invented data</span></nav>
+  <main class="demo-main"><div id="root" class="spn-page"></div></main>
+  <script src="harness.js"></script>
+  <script src="plugin-files/stash-performer-network-core.js"></script>
+  <script src="plugin-files/stash-performer-network.js"></script>
+  <script>
+    // ?lang=en|de|fr|es|it picks the language (in Stash it follows the interface language)
+    var lang = new URLSearchParams(location.search).get("lang") || "en";
+    window.SPNMount(document.getElementById("root"), { locale: lang });
+  </script>
+</body>
+</html>

@@ -1,0 +1,67 @@
+name: Performer Network
+description: >-
+  Network page of who performed with whom; the more collaborations, the thicker the edge.
+  Adds a "Network" entry to the navbar. All libraries are bundled locally (no CDN).
+version: 0.1.0
+ui:
+  # Only this small entry script runs on every Stash page; vis-network and MediaPipe are
+  # loaded lazily from the asset path below when the network page is opened.
+  javascript:
+    - stash-performer-network-core.js
+    - stash-performer-network.js
+  css:
+    - stash-performer-network.css
+  # Served at /plugin/stash-performer-network/assets/vendor/... and .../assets/locales/<code>.json
+  assets:
+    /vendor: vendor
+    /locales: locales
+# Also editable in the plugin's own settings dialog (gear button on the network page). Keys and types
+# must match the SETTINGS table in stash-performer-network.js; JSON values are stored as strings.
+settings:
+  storeFaces:
+    displayName: Store face positions on performers
+    description: >-
+      Off by default. On: the detected face box (four numbers between 0 and 1, an image checksum and the
+      detector version) is stored in the performer custom field "spn_face", so other devices crop without
+      running face detection; Stash then also updates the performer's updated_at. Libraries that already
+      have such face data keep storing until this setting is saved once.
+    type: BOOLEAN
+  disableFaceCrops:
+    displayName: Do not use face crops
+    description: "On: nodes show the performer image cropped from the upper third; MediaPipe is not loaded."
+    type: BOOLEAN
+  nodeSizeBy:
+    displayName: Node size by
+    description: "scenes (default) or orgasms (orgasm count; the earlier value o is still read)."
+    type: STRING
+  labelZoom:
+    displayName: Names from zoom level
+    description: Names are drawn once their on-screen size reaches this many pixels (0-24, default 8).
+    type: NUMBER
+  genderColors:
+    displayName: Colours per gender (JSON)
+    description: 'JSON object, e.g. {"FEMALE": "#e0559a"}; empty = built-in colours.'
+    type: STRING
+  startLimit:
+    displayName: Large networks start with at most this many performers
+    description: >-
+      Larger networks first show the favorites and their strongest partners (without favorites: the most
+      connected performers); "Show all" in the status line or ?all=1 shows everyone. 50-10000; 0 or empty =
+      default 400.
+    type: NUMBER
+  defaultCountBy:
+    displayName: Default counting of edge strength
+    description: "scenes (default) or productions."
+    type: STRING
+  defaultMaxCast:
+    displayName: Default maximum performers per scene/production
+    description: 2-40; 0 or empty = default 12.
+    type: NUMBER
+  defaultFavMode:
+    displayName: Default favorites filter mode
+    description: "partners (default) or only."
+    type: STRING
+  defaultFilters:
+    displayName: Filters when the page opens (JSON)
+    description: 'JSON object with studio, tags, tagMode, sceneStars, perfStars, watchedOnly, orgasmOnly (earlier name oOnly is still read); easiest set with "Use current filters" in the dialog.'
+    type: STRING
