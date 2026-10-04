@@ -2,6 +2,16 @@
 
 All notable changes are listed here. Versions follow [Semantic Versioning](https://semver.org/).
 
+## 0.1.2 (no more black screen)
+
+- An error in the plugin, or another plugin clashing with it, no longer leaves the whole Stash UI black
+  (reported as React error #152). The navbar entry then just disappears, and the network page shows a
+  short error text instead of an empty page.
+- The navbar icon no longer goes through Stash's patchable Icon component, so another plugin's Icon
+  patch cannot break the entry.
+- The plugin loads only once, even if it is installed twice, and the navbar entry no longer needs every
+  UI library to be present: without one, the page is still reachable at `/performer-network`.
+
 ## 0.1.1 (tall performer images)
 
 - Tall performer images (more than 1.5 times as high as wide, such as full-body photos in 1:2) no longer

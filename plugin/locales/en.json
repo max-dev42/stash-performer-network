@@ -3,6 +3,7 @@
   "title": "Performer network",
   "loading": "Loading data and library …",
   "error": "Error: {message}",
+  "pageError": "The network page could not be shown: {message}",
   "searchLabel": "Search / path",
   "searchPlaceholder": "Find a name …",
   "pathPlaceholder": "Path to …",

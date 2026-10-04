@@ -27,6 +27,10 @@
   var PluginApi = window.PluginApi;
   var Core = window.SPNCore; // stash-performer-network-core.js, loaded first
   if (!PluginApi || !Core) return;
+  // Loaded twice (plugin installed in two folders, or the script included again): the second copy would
+  // register the route and the navbar entry once more.
+  if (window.SPNLoaded) return;
+  window.SPNLoaded = true;
   var GENDER_COLORS = Core.GENDER_COLORS, UNKNOWN = Core.UNKNOWN, I18n = Core.I18n, ICONS = Core.ICONS, ICON_BOX = Core.ICON_BOX;
   var byNumber = Core.byNumber, pairKey = Core.pairKey, localUrl = Core.localUrl, bytesHash = Core.bytesHash;
   var dims = Core.dims, boxToPixels = Core.boxToPixels, boxToNormal = Core.boxToNormal, fallbackSquare = Core.fallbackSquare;
@@ -2763,27 +2767,84 @@
 
   // ------------------------------------------------------------------ React wrapper, route, navbar
 
+  // A render error in our components must not reach Stash: its own error boundary sits outside the
+  // IntlProvider and fails itself, which leaves the whole UI black. fallback(error) renders instead.
+  function ErrorBoundary(props) {
+    React.Component.call(this, props);
+    this.state = { error: null };
+  }
+  ErrorBoundary.prototype = Object.create(React.Component.prototype);
+  ErrorBoundary.prototype.constructor = ErrorBoundary;
+  ErrorBoundary.getDerivedStateFromError = function (error) {
+    return { error: error };
+  };
+  ErrorBoundary.prototype.componentDidCatch = function (error) {
+    console.error(PLUGIN_ID + ":", error);
+  };
+  ErrorBoundary.prototype.render = function () {
+    return this.state.error ? this.props.fallback(this.state.error) : this.props.children;
+  };
+
+  function guarded(Component, fallback) {
+    function Guarded(props) {
+      return h(ErrorBoundary, { fallback: fallback }, h(Component, props));
+    }
+    Guarded.displayName = "SPN" + (Component.name || "Component");
+    return Guarded;
+  }
+
+  function errorMessage(e) {
+    return (e && e.message) || String(e);
+  }
+
+  function PageError(props) {
+    var i18n = useI18n();
+    var message = errorMessage(props.error);
+    return h(
+      "div",
+      { className: CSS + "-page" },
+      h("div", { className: CSS + "-status " + CSS + "-error", role: "alert" }, i18n ? i18n.t("pageError", { message: message }) : "Performer Network: " + message)
+    );
+  }
+
   function NetworkPage() {
     var ref = React.useRef(null);
     var history = RRD.useHistory();
     var i18n = useI18n();
+    var failed = React.useState(null);
     React.useEffect(
       function () {
         if (!i18n) return;
         document.title = i18n.t("title") + " | Stash";
-        var view = new NetworkView(ref.current, history, i18n);
-        view.start();
+        var view;
+        try {
+          view = new NetworkView(ref.current, history, i18n);
+          view.start();
+        } catch (e) {
+          console.error(PLUGIN_ID + ":", e);
+          failed[1](e);
+        }
         return function () {
-          view.destroy();
+          try {
+            if (view) view.destroy();
+          } catch (e) {
+            console.error(PLUGIN_ID + ":", e);
+          }
           if (ref.current) ref.current.innerHTML = "";
         };
       },
       [i18n]
     );
+    if (failed[0]) return h(PageError, { error: failed[0] });
     return h("div", { className: CSS + "-page", ref: ref });
   }
 
-  PluginApi.register.route(ROUTE, NetworkPage);
+  PluginApi.register.route(
+    ROUTE,
+    guarded(NetworkPage, function (error) {
+      return h(PageError, { error: error });
+    })
+  );
 
   // Entry point for use outside Stash's UI (demo/ and the README screenshots); in Stash the route above
   // mounts the page. opts: {locale, history: {push, replace}}.
@@ -2796,10 +2857,13 @@
     });
   };
 
-  var Nav = Bootstrap.Nav;
-  var Button = Bootstrap.Button;
-  var FA = PluginApi.libraries.FontAwesomeSolid;
-  var Icon = PluginApi.components && PluginApi.components.Icon;
+  // The navbar entry is optional: if a library it needs is missing, the page stays reachable at ROUTE.
+  var Nav = Bootstrap && Bootstrap.Nav;
+  var Button = Bootstrap && Bootstrap.Button;
+  var FA = PluginApi.libraries.FontAwesomeSolid || {};
+  // FontAwesomeIcon directly, not PluginApi.components.Icon: that one can be patched by other plugins, and
+  // a patch that returns nothing for our icon would break the entry. Stash's Icon only adds "fa-icon".
+  var FontAwesomeIcon = PluginApi.libraries.ReactFontAwesome && PluginApi.libraries.ReactFontAwesome.FontAwesomeIcon;
   var icon = FA.faCircleNodes || FA.faProjectDiagram || FA.faShareNodes;
 
   // Same markup as Stash's own menu items (MainNavBar uses a LinkContainer around a Button, which ends
@@ -2820,14 +2884,21 @@
             "minimal p-4 p-xl-2 d-flex d-xl-inline-block flex-column justify-content-between align-items-center" +
             (active ? " active" : ""),
         },
-        Icon && icon ? h(Icon, { icon: icon, className: "nav-menu-icon d-block d-xl-inline mb-2 mb-xl-0" }) : null,
+        FontAwesomeIcon && icon ? h(FontAwesomeIcon, { icon: icon, className: "fa-icon nav-menu-icon d-block d-xl-inline mb-2 mb-xl-0" }) : null,
         h("span", null, i18n.t("nav"))
       )
     );
   }
 
-  PluginApi.patch.before("MainNavBar.MenuItems", function (props) {
-    var item = h(NavItem, { key: PLUGIN_ID });
-    return [Object.assign({}, props, { children: React.Children.toArray(props.children).concat([item]) })];
+  var SafeNavItem = guarded(NavItem, function () {
+    return null;
   });
+
+  if (Nav && Button && RRD && RRD.Link && RRD.useRouteMatch && PluginApi.patch && PluginApi.patch.before) {
+    PluginApi.patch.before("MainNavBar.MenuItems", function () {
+      return Core.withNavChild(arguments, h(SafeNavItem, { key: PLUGIN_ID }), React.Children.toArray);
+    });
+  } else {
+    console.warn(PLUGIN_ID + ": navbar entry not added, a library is missing; the page is at " + ROUTE);
+  }
 })();

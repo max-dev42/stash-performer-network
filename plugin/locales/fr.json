@@ -3,6 +3,7 @@
   "title": "Réseau des performeurs",
   "loading": "Chargement des données et de la bibliothèque …",
   "error": "Erreur : {message}",
+  "pageError": "Impossible d'afficher la page du réseau : {message}",
   "searchLabel": "Recherche / chemin",
   "searchPlaceholder": "Chercher un nom …",
   "pathPlaceholder": "Chemin vers …",

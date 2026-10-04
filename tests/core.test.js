@@ -409,3 +409,25 @@ test("face data of the earlier detector version: faces stand, no face is checked
   assert.equal(C.faceStillValid({ b: null }, 500, 1000), false); // local cache entry of 0.1.0 (no version)
   assert.equal(C.faceStillValid(null, 600, 800), false);
 });
+
+test("withNavChild appends the navbar entry and keeps all other arguments", () => {
+  const toArray = (c) => (c == null ? [] : [].concat(c));
+  const props = { children: ["a", "b"], other: 1 };
+  const ctx = {};
+  const [p, second] = C.withNavChild([props, ctx], "item", toArray);
+  assert.deepEqual(p, { children: ["a", "b", "item"], other: 1 });
+  assert.equal(second, ctx);
+  assert.deepEqual(props.children, ["a", "b"]); // the original props are not changed
+  assert.deepEqual(C.withNavChild([{}], "item", toArray)[0].children, ["item"]);
+});
+
+test("withNavChild returns the original arguments when something is off", () => {
+  const boom = () => {
+    throw new Error("boom");
+  };
+  const props = { children: ["a"] };
+  assert.deepEqual(C.withNavChild([props], "item", boom), [props]);
+  assert.deepEqual(C.withNavChild([null], "item", (c) => c), [null]);
+  assert.deepEqual(C.withNavChild([], "item", (c) => c), []);
+  assert.deepEqual(C.withNavChild(undefined, "item", (c) => c), []);
+});

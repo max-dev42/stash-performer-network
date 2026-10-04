@@ -3,6 +3,7 @@
   "title": "Rete di attori e attrici",
   "loading": "Caricamento dei dati e della libreria …",
   "error": "Errore: {message}",
+  "pageError": "Impossibile mostrare la pagina della rete: {message}",
   "searchLabel": "Ricerca / percorso",
   "searchPlaceholder": "Cerca un nome …",
   "pathPlaceholder": "Percorso verso …",

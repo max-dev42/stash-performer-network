@@ -2,7 +2,7 @@ name: Performer Network
 description: >-
   Network page of who performed with whom; the more collaborations, the thicker the edge.
   Adds a "Network" entry to the navbar. All libraries are bundled locally (no CDN).
-version: 0.1.1
+version: 0.1.2
 ui:
   # Only this small entry script runs on every Stash page; vis-network and MediaPipe are
   # loaded lazily from the asset path below when the network page is opened.

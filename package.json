@@ -1,6 +1,6 @@
 {
   "name": "stash-performer-network",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "description": "Stash UI plugin: network of performers who appear together",
   "license": "MIT",

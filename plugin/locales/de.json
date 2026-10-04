@@ -3,6 +3,7 @@
   "title": "Performer-Netz",
   "loading": "Lade Daten und Bibliothek …",
   "error": "Fehler: {message}",
+  "pageError": "Die Netzwerkseite konnte nicht angezeigt werden: {message}",
   "searchLabel": "Suche / Pfad",
   "searchPlaceholder": "Name suchen …",
   "pathPlaceholder": "Pfad zu …",

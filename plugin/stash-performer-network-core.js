@@ -969,8 +969,24 @@
     return cut === big[max] ? cut + 1e-6 : cut;
   }
 
+  // Arguments for the patch.before("MainNavBar.MenuItems") callback: the props with item appended to the
+  // children, all other arguments unchanged. Whatever goes wrong, the original arguments come back, so
+  // Stash's own menu items still render. toArray is React.Children.toArray.
+  function withNavChild(args, item, toArray) {
+    args = Array.prototype.slice.call(args || []);
+    try {
+      var props = args[0];
+      if (!props || typeof props !== "object") return args;
+      var children = toArray(props.children).concat([item]);
+      return [Object.assign({}, props, { children: children })].concat(args.slice(1));
+    } catch (e) {
+      return args;
+    }
+  }
+
   var SPNCore = {
     PLUGIN_ID: PLUGIN_ID,
+    withNavChild: withNavChild,
     blockedRequest: blockedRequest,
     createRequestGuard: createRequestGuard,
     imageMinRadius: imageMinRadius,
