@@ -86,6 +86,37 @@
     });
   }
 
+  // Tall images (height above TALL_RATIO times the width) are usually full-body photos, often 1:2, with
+  // the head near the top edge.
+  var TALL_RATIO = 1.5, TOP_MARGIN = 0.02;
+  function isTall(w, h) {
+    return h > w * TALL_RATIO;
+  }
+
+  // Square crop used when no face is known, {x, y, side} in image pixels, full width (or full height for
+  // wide images). mode (setting fallbackCrop): "top" = TOP_MARGIN of the height below the top edge,
+  // "upperThird" = centred on the upper third, "center", "auto" = top for tall images, else upper third.
+  function fallbackSquare(w, h, mode) {
+    var side = Math.min(w, h), y;
+    if (mode !== "top" && mode !== "upperThird" && mode !== "center") mode = isTall(w, h) ? "top" : "upperThird";
+    if (mode === "top") y = h * TOP_MARGIN;
+    else if (mode === "center") y = (h - side) / 2;
+    else y = h / 3 - side / 2;
+    return { x: (w - side) / 2, y: Math.max(0, Math.min(h - side, y)), side: side };
+  }
+
+  // Region of the second detection attempt on tall images, {x, y, side} in image pixels: the top square
+  // (for 1:2 the upper half). null for other images.
+  function tallRegion(w, h) {
+    return isTall(w, h) ? { x: 0, y: 0, side: w } : null;
+  }
+
+  // A box detected on the region drawn at size x size pixels, back in image pixels.
+  function regionBoxToImage(bb, region, size) {
+    var f = region.side / size;
+    return { originX: region.x + bb.originX * f, originY: region.y + bb.originY * f, width: bb.width * f, height: bb.height * f };
+  }
+
   function I18n(locale, messages, fallback) {
     this.locale = locale;
     this.messages = messages || {};
@@ -701,6 +732,7 @@
     // off by default for new installations; see effectiveStoreFaces for libraries that already have face data
     { key: "storeFaces", type: "BOOLEAN", def: false, alwaysStore: true, section: "faces", label: "setStoreFaces", help: "setStoreFacesHelp" },
     { key: "disableFaceCrops", type: "BOOLEAN", def: false, invert: true, section: "faces", label: "setUseCrops", help: "setUseCropsHelp" },
+    { key: "fallbackCrop", type: "STRING", def: "auto", options: { auto: "cropAuto", top: "cropTop", upperThird: "cropUpperThird", center: "cropCenter" }, section: "faces", label: "setFallbackCrop", help: "setFallbackCropHelp" },
     { key: "nodeSizeBy", type: "STRING", def: "scenes", options: { scenes: "sizeScenes", orgasms: "sizeOrgasm" }, legacyValues: { o: "orgasms" }, section: "display", label: "sizeBy" },
     { key: "labelZoom", type: "NUMBER", def: 8, min: 0, max: 24, section: "display", label: "setLabelZoom", help: "setLabelZoomHelp" },
     { key: "genderColors", type: "JSON", def: {}, section: "display", label: "setGenderColors", editor: "colors" },
@@ -802,17 +834,27 @@
     return v != null && map && Object.prototype.hasOwnProperty.call(map, v) ? map[v] : v;
   }
 
+  // Detector version: bfsr2 (0.1.1) adds the second attempt on the top square of tall images. Results of
+  // bfsr1 are still read; faceStillValid says which of them stand.
   var FACE_FIELD = "spn_face";
-  var FACE_VERSION = "mp-tv1.0.1-bfsr1";
+  var FACE_VERSION = "mp-tv1.0.1-bfsr2";
+  var FACE_VERSIONS = [FACE_VERSION, "mp-tv1.0.1-bfsr1"];
 
   function readFaceField(p) {
     try {
       var raw = p.custom_fields && p.custom_fields[FACE_FIELD];
       var v = typeof raw === "string" ? JSON.parse(raw) : raw;
-      return v && v.v === FACE_VERSION && typeof v.h === "string" ? v : null;
+      return v && FACE_VERSIONS.indexOf(v.v) >= 0 && typeof v.h === "string" ? v : null;
     } catch (e) {
       return null;
     }
+  }
+
+  // A result {v, b} for an image of w x h pixels: one of the current version always stands, an earlier
+  // one if it found a face or the image is not tall (there the first attempt is all the detector does).
+  // An earlier "no face" for a tall image is detected again, once.
+  function faceStillValid(rec, w, h) {
+    return !!rec && (rec.v === FACE_VERSION || !!rec.b || !isTall(w, h));
   }
 
   // ------------------------------------------------------------------ request guard
@@ -944,6 +986,10 @@
     dims: dims,
     boxToPixels: boxToPixels,
     boxToNormal: boxToNormal,
+    isTall: isTall,
+    fallbackSquare: fallbackSquare,
+    tallRegion: tallRegion,
+    regionBoxToImage: regionBoxToImage,
     I18n: I18n,
     prepareData: prepareData,
     attachTags: attachTags,
@@ -965,6 +1011,7 @@
     FACE_FIELD: FACE_FIELD,
     FACE_VERSION: FACE_VERSION,
     readFaceField: readFaceField,
+    faceStillValid: faceStillValid,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = SPNCore;
   else root.SPNCore = SPNCore;

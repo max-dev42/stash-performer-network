@@ -355,3 +355,57 @@ test("layout for large networks: deterministic, finite, connected performers end
   const standalone = new Function("return " + C.runLayout.toString())();
   assert.deepEqual(Array.from(standalone(input()).y), Array.from(a.y));
 });
+
+test("fallback crop: tall images from the top, others from the upper third", () => {
+  // 1:2, as in full-body photos: the upper third would start at h/6 and cut off the head
+  assert.equal(C.isTall(500, 1000), true);
+  assert.equal(C.isTall(500, 750), false); // exactly 1.5 is not tall
+  assert.deepEqual(C.fallbackSquare(500, 1000, "auto"), { x: 0, y: 20, side: 500 });
+  assert.deepEqual(C.fallbackSquare(500, 1000, "upperThird"), { x: 0, y: 1000 / 3 - 250, side: 500 });
+  assert.deepEqual(C.fallbackSquare(500, 1000, "center"), { x: 0, y: 250, side: 500 });
+  assert.deepEqual(C.fallbackSquare(400, 1000, "top"), { x: 0, y: 20, side: 400 }); // 1:2.5
+  // 3:4 portrait: auto stays the upper third
+  assert.deepEqual(C.fallbackSquare(600, 800, "auto"), C.fallbackSquare(600, 800, "upperThird"));
+  assert.deepEqual(C.fallbackSquare(600, 800, "upperThird"), { x: 0, y: 0, side: 600 }); // clamped at the top
+  // wide image: full height, centred horizontally, whatever the mode
+  for (const m of ["auto", "top", "upperThird", "center"]) assert.deepEqual(C.fallbackSquare(1000, 500, m), { x: 250, y: 0, side: 500 });
+  // unknown mode = auto
+  assert.deepEqual(C.fallbackSquare(500, 1000, "nonsense"), C.fallbackSquare(500, 1000, "auto"));
+});
+
+test("settings: fallbackCrop", () => {
+  assert.equal(C.readSettings(null).fallbackCrop, "auto");
+  assert.equal(C.readSettings({ fallbackCrop: "top" }).fallbackCrop, "top");
+  assert.equal(C.readSettings({ fallbackCrop: "bottom" }).fallbackCrop, "auto");
+  assert.deepEqual(C.settingsInput(C.readSettings({ fallbackCrop: "auto" })).fallbackCrop, undefined); // default is left out
+  assert.equal(C.settingsInput(C.readSettings({ fallbackCrop: "center" })).fallbackCrop, "center");
+});
+
+test("second detection on tall images: top square, box back in image pixels", () => {
+  assert.equal(C.tallRegion(600, 800), null);
+  assert.deepEqual(C.tallRegion(500, 1000), { x: 0, y: 0, side: 500 }); // 1:2: the upper half
+  assert.deepEqual(C.tallRegion(400, 1000), { x: 0, y: 0, side: 400 }); // 1:2.5: the top 40 %
+  // a box found at 128 px on the top square of a 500 x 1000 image
+  const r = C.tallRegion(500, 1000);
+  assert.deepEqual(C.regionBoxToImage({ originX: 32, originY: 16, width: 32, height: 40 }, r, 128), { originX: 125, originY: 62.5, width: 125, height: 156.25 });
+  // with an offset region the offset is added
+  assert.deepEqual(C.regionBoxToImage({ originX: 0, originY: 0, width: 64, height: 64 }, { x: 10, y: 20, side: 256 }, 128), { originX: 10, originY: 20, width: 128, height: 128 });
+  // normalised as stored in spn_face
+  const img = { width: 500, height: 1000 };
+  assert.deepEqual(C.boxToNormal(img, C.regionBoxToImage({ originX: 32, originY: 16, width: 32, height: 40 }, r, 128)), [0.25, 0.0625, 0.25, 0.1563]);
+});
+
+test("face data of the earlier detector version: faces stand, no face is checked again on tall images", () => {
+  const field = (v, b) => ({ custom_fields: { spn_face: JSON.stringify({ v, h: "1a2b3c4d:2048", b }) } });
+  const old = "mp-tv1.0.1-bfsr1";
+  assert.notEqual(C.FACE_VERSION, old);
+  assert.equal(C.readFaceField(field("mp-tv0-unknown", null)), null);
+  const none = C.readFaceField(field(old, null)), face = C.readFaceField(field(old, [0.3, 0.05, 0.2, 0.1]));
+  assert.equal(none.v, old); // still read
+  assert.equal(C.faceStillValid(face, 500, 1000), true);
+  assert.equal(C.faceStillValid(none, 600, 800), true); // not tall: the first attempt is all there is
+  assert.equal(C.faceStillValid(none, 500, 1000), false); // tall: detect again
+  assert.equal(C.faceStillValid(C.readFaceField(field(C.FACE_VERSION, null)), 500, 1000), true);
+  assert.equal(C.faceStillValid({ b: null }, 500, 1000), false); // local cache entry of 0.1.0 (no version)
+  assert.equal(C.faceStillValid(null, 600, 800), false);
+});

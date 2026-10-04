@@ -2,7 +2,7 @@ name: Performer Network
 description: >-
   Network page of who performed with whom; the more collaborations, the thicker the edge.
   Adds a "Network" entry to the navbar. All libraries are bundled locally (no CDN).
-version: 0.1.0
+version: 0.1.1
 ui:
   # Only this small entry script runs on every Stash page; vis-network and MediaPipe are
   # loaded lazily from the asset path below when the network page is opened.
@@ -28,8 +28,15 @@ settings:
     type: BOOLEAN
   disableFaceCrops:
     displayName: Do not use face crops
-    description: "On: nodes show the performer image cropped from the upper third; MediaPipe is not loaded."
+    description: "On: nodes show the performer image cropped as set in fallbackCrop; MediaPipe is not loaded."
     type: BOOLEAN
+  fallbackCrop:
+    displayName: Crop without a face
+    description: >-
+      Which square of the performer image is shown when no face is found or face crops are off: auto
+      (default; top for images more than 1.5 times as high as wide, else upper third), top, upperThird or
+      center.
+    type: STRING
   nodeSizeBy:
     displayName: Node size by
     description: "scenes (default) or orgasms (orgasm count; the earlier value o is still read)."

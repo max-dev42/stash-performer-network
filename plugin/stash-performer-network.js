@@ -29,7 +29,8 @@
   if (!PluginApi || !Core) return;
   var GENDER_COLORS = Core.GENDER_COLORS, UNKNOWN = Core.UNKNOWN, I18n = Core.I18n, ICONS = Core.ICONS, ICON_BOX = Core.ICON_BOX;
   var byNumber = Core.byNumber, pairKey = Core.pairKey, localUrl = Core.localUrl, bytesHash = Core.bytesHash;
-  var dims = Core.dims, boxToPixels = Core.boxToPixels, boxToNormal = Core.boxToNormal;
+  var dims = Core.dims, boxToPixels = Core.boxToPixels, boxToNormal = Core.boxToNormal, fallbackSquare = Core.fallbackSquare;
+  var tallRegion = Core.tallRegion, regionBoxToImage = Core.regionBoxToImage, faceStillValid = Core.faceStillValid;
   var prepareData = Core.prepareData, genderOf = Core.genderOf, selectScenes = Core.selectScenes;
   var computeGraph = Core.computeGraph, shortestPath = Core.shortestPath;
   var SETTINGS = Core.SETTINGS, readSettings = Core.readSettings;
@@ -290,12 +291,10 @@
     return canvas.toDataURL("image/jpeg", 0.85);
   }
 
-  // Fallback: full-width square centred on the upper third.
-  function upperThirdCrop(img) {
-    var d = dims(img), w = d.w, ht = d.h;
-    var side = Math.min(w, ht);
-    var y = Math.max(0, Math.min(ht - side, ht / 3 - side / 2));
-    return crop(img, (w - side) / 2, y, side);
+  // Fallback without a face: full-width square, placed by the setting fallbackCrop (see Core.fallbackSquare).
+  function fallbackCrop(img, mode) {
+    var d = dims(img), sq = fallbackSquare(d.w, d.h, mode);
+    return crop(img, sq.x, sq.y, sq.side);
   }
 
   // Face: square around the largest detection, with margin for hair and chin, kept inside the image.
@@ -2181,7 +2180,8 @@
   // -- images: only for nodes drawn large enough for one (this.wanted, see drawNode), the largest on screen
   // first, a few in flight at once (pumpImages). Per performer: the crop cached in this browser, else the
   // image with shared face data (spn_face), else face detection (MediaPipe, loaded on first need), else
-  // the upper third. Finished crops are drawn together, in one redraw at most every IMAGE_REDRAW_MS.
+  // the fallback crop (fallbackCrop). Finished crops are drawn together, in one redraw at most every
+  // IMAGE_REDRAW_MS.
   var IMAGE_REDRAW_MS = 500;
   NetworkView.prototype.setImage = function (pid, pic, kind, url) {
     var self = this;
@@ -2294,7 +2294,7 @@
 
   // (Re)starts the image jobs. redetect: undefined = normal; "missing" = detect again where Stash has no
   // face data (local cache ignored for those); "all" = ignore local cache and shared data for everyone.
-  // With "use face crops" off, images are only cropped square (upper third): no cache, no MediaPipe.
+  // With "use face crops" off, images are only cropped square (fallbackCrop): no cache, no MediaPipe.
   // Crops already drawn stay until a new one replaces them.
   NetworkView.prototype.prepareImages = function (redetect) {
     var self = this, b = this.base, items = {};
@@ -2311,7 +2311,7 @@
         items[pid].shared = null;
       });
     this.imageItems = items;
-    this.timing.images = { total: Object.keys(items).length, cached: 0, shared: 0, detected: 0, face: 0, fallback: 0, plain: 0, failed: 0 };
+    this.timing.images = { total: Object.keys(items).length, cached: 0, shared: 0, detected: 0, face: 0, fallback: 0, plain: 0, failed: 0, retried: 0, retryFace: 0 };
     this.timing.writes = { mode: this.writeMode(), written: 0, dry: 0, failed: 0 };
     this.pumpImages();
   };
@@ -2442,14 +2442,19 @@
     var lookup = plain || redetect === "all" ? Promise.resolve({}) : Cache.getMany([o.key]);
     return lookup.then(function (stored) {
       if (!current()) return;
-      var v = stored[o.key];
+      var v = stored[o.key], known = null;
       if (v && !(redetect === "missing" && !o.shared)) {
-        m.cached++;
-        // detected here earlier but not (yet) stored on the performer: share it now
-        if (v.h && (!o.shared || o.shared.h !== v.h)) self.queueFaceWrite(o.pid, { v: FACE_VERSION, h: v.h, b: v.b || null });
-        return loadImage(v.url).then(function (img) {
-          if (current()) self.setImage(o.pid, img, v.kind, v.url);
-        });
+        // no face, but found by an earlier detector version or cropped with another fallbackCrop: the image
+        // is loaded again and then cropped again or, if faceStillValid says so, detected again
+        if (v.kind === "fallback" && (v.v !== FACE_VERSION || v.crop !== self.settings.fallbackCrop)) known = { v: v.v, h: v.h, b: null };
+        else {
+          m.cached++;
+          // detected here earlier but not (yet) stored on the performer: share it now
+          if (v.h && (!o.shared || o.shared.h !== v.h)) self.queueFaceWrite(o.pid, { v: FACE_VERSION, h: v.h, b: v.b || null });
+          return loadImage(v.url).then(function (img) {
+            if (current()) self.setImage(o.pid, img, v.kind, v.url);
+          });
+        }
       }
       return loadBitmap(o.url)
         .then(function (res) {
@@ -2463,42 +2468,74 @@
           var img = res.img;
           if (!current()) return closeImage(img);
           if (plain) return self.finishImage(o, img, null, null, true);
-          if (o.shared && res.hash && o.shared.h === res.hash) {
+          var dm = dims(img), shared = !!(o.shared && res.hash && o.shared.h === res.hash);
+          if (known && faceStillValid(known, dm.w, dm.h)) {
+            m.cached++;
+            return self.finishImage(o, img, null, res.hash, shared);
+          }
+          if (shared && faceStillValid(o.shared, dm.w, dm.h)) {
             m.shared++;
             return self.finishImage(o, img, o.shared.b, res.hash, true);
           }
-          // while MediaPipe is still loading, show the upper third meanwhile
-          if (!self.detectorReady && !self.pics[o.pid]) self.setImage(o.pid, upperThirdCrop(img), "fallback");
+          // while MediaPipe is still loading, show the fallback crop meanwhile
+          if (!self.detectorReady && !self.pics[o.pid]) self.setImage(o.pid, fallbackCrop(img, self.settings.fallbackCrop), "fallback");
           return self.getDetector().then(function (d) {
             if (!current() || !d) return closeImage(img); // no detector: keep the fallback, nothing cached or shared
             self.quiet(true);
             m.detected++;
-            var largest = null;
-            (d.detect(img).detections || []).forEach(function (det) {
-              var bb = det.boundingBox;
-              if (bb && (!largest || bb.width * bb.height > largest.width * largest.height)) largest = bb;
-            });
-            return self.finishImage(o, img, largest ? boxToNormal(img, largest) : null, res.hash, false);
+            var largest = largestBox(d.detect(img));
+            var box = largest ? boxToNormal(img, largest) : self.detectTop(d, img);
+            return self.finishImage(o, img, box, res.hash, false);
           });
         });
     });
+  };
+
+  function largestBox(result) {
+    var largest = null;
+    ((result && result.detections) || []).forEach(function (det) {
+      var bb = det.boundingBox;
+      if (bb && (!largest || bb.width * bb.height > largest.width * largest.height)) largest = bb;
+    });
+    return largest;
+  }
+
+  // Second attempt for tall images (Core.tallRegion): in a full-body photo the face is small, and BlazeFace
+  // short range, which sees the whole image at DETECT_PX, often misses it. The top square alone, scaled to
+  // the same size, shows the face several times larger. Returns the box normalised to the whole image.
+  var DETECT_PX = 128; // input size of blaze_face_short_range
+  NetworkView.prototype.detectTop = function (d, img) {
+    var dm = dims(img), r = tallRegion(dm.w, dm.h), m = this.timing.images;
+    if (!r) return null;
+    m.retried++;
+    var c = document.createElement("canvas");
+    c.width = c.height = DETECT_PX;
+    var g = c.getContext("2d");
+    g.imageSmoothingQuality = "high";
+    g.drawImage(img, r.x, r.y, r.side, r.side, 0, 0, DETECT_PX, DETECT_PX);
+    var bb = largestBox(d.detect(c));
+    if (!bb) return null;
+    m.retryFace++;
+    return boxToNormal(img, regionBoxToImage(bb, r, DETECT_PX));
   };
 
   NetworkView.prototype.finishImage = function (o, img, box, hash, viaShared) {
     var m = this.timing.images;
     if (this.plain) {
       m.plain++;
-      this.setImage(o.pid, upperThirdCrop(img), "plain");
+      this.setImage(o.pid, fallbackCrop(img, this.settings.fallbackCrop), "plain");
       return closeImage(img);
     }
-    var pic = box ? faceCrop(img, boxToPixels(img, box)) : upperThirdCrop(img);
+    var mode = this.settings.fallbackCrop;
+    var pic = box ? faceCrop(img, boxToPixels(img, box)) : fallbackCrop(img, mode);
     var kind = box ? "face" : "fallback";
     m[kind]++;
     closeImage(img);
     var url = toUrl(pic);
     this.setImage(o.pid, pic, kind, url);
     if (!viaShared && hash) this.queueFaceWrite(o.pid, { v: FACE_VERSION, h: hash, b: box });
-    return Cache.put(o.key, { url: url, kind: kind, h: hash, b: box }); // h and b kept so a later visit can still share it
+    // h and b kept so a later visit can still share it; crop = the fallbackCrop the crop was made with
+    return Cache.put(o.key, { url: url, kind: kind, h: hash, b: box, v: FACE_VERSION, crop: box ? null : mode });
   };
 
   // ------------------------------------------------------------------ settings dialog
@@ -2709,7 +2746,7 @@
           self.sidebar.innerHTML = "";
           self.buildFilters();
           self.draw();
-          if (st.disableFaceCrops !== before.disableFaceCrops) self.prepareImages();
+          if (st.disableFaceCrops !== before.disableFaceCrops || st.fallbackCrop !== before.fallbackCrop) self.prepareImages();
           close();
           self.setStatus(t("setSaved"));
         })

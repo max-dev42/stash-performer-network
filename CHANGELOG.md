@@ -2,6 +2,16 @@
 
 All notable changes are listed here. Versions follow [Semantic Versioning](https://semver.org/).
 
+## 0.1.1 (tall performer images)
+
+- Tall performer images (more than 1.5 times as high as wide, such as full-body photos in 1:2) no longer
+  lose the head in the circle: without a face the square is taken from the top instead of the upper
+  third. New setting "Without a face" (`fallbackCrop`: auto, top, upperThird, center).
+- Faces in tall images are found more often: when the whole image shows none, the top square is
+  searched again on its own. In a test library 10 of 10 images in 1:2 and 1:2.5 got a face, 5 before.
+- Detector version `mp-tv1.0.1-bfsr2`. Earlier results stay valid; only tall images without a face are
+  detected once more (with storing on, those performers are written once more).
+
 ## 0.1.0 (first public release)
 
 - Network page (`/performer-network`) with a navbar entry: performers as nodes with face crops, shared
