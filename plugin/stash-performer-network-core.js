@@ -731,6 +731,183 @@
   }
 
   // vis-network's forceAtlas2Based settings as the plugin uses them (see the options in draw())
+  // The same force model in three dimensions, for the 3D view (beta): an octree instead of the quadtree,
+  // start positions in a ball. Self-contained like runLayout (it is sent to the Web Worker as source
+  // text), so it must not use anything outside this function. report(x, y, z, iterations, done).
+  function runLayout3D(input, report) {
+    var p = input.params, n = input.n, E = input.edges, R = input.radius;
+    var x = new Float64Array(n), y = new Float64Array(n), z = new Float64Array(n);
+    var vx = new Float64Array(n), vy = new Float64Array(n), vz = new Float64Array(n);
+    var fx = new Float64Array(n), fy = new Float64Array(n), fz = new Float64Array(n), deg = new Float64Array(n);
+    var i, j, k;
+    for (i = 0; i < n; i++) deg[i] = 1;
+    for (k = 0; k < E.length; k += 2) {
+      deg[E[k]]++;
+      deg[E[k + 1]]++;
+    }
+    var seed = (p.seed >>> 0) || 1;
+    function rnd() {
+      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+      return seed / 4294967296;
+    }
+    // random in a ball whose radius grows with the node count (like the disc of the 2D layout)
+    var r0 = 10 * 0.1 * Math.pow(n, 2 / 3) * 2 + 10;
+    for (i = 0; i < n; i++) {
+      var u = 2 * rnd() - 1, phi = 2 * Math.PI * rnd(), rr = r0 * Math.cbrt(rnd()), sq = Math.sqrt(1 - u * u);
+      x[i] = rr * sq * Math.cos(phi);
+      y[i] = rr * sq * Math.sin(phi);
+      z[i] = rr * u;
+    }
+    // octree in flat arrays: per cell the corner (cl, ct, cf), size, mass, mass-weighted centre, eight
+    // children and a body (node index, -1 = empty, -2 = internal)
+    var cap = 16 * n + 64;
+    var cl = new Float64Array(cap), ct = new Float64Array(cap), cf = new Float64Array(cap), cs = new Float64Array(cap);
+    var cm = new Float64Array(cap), cx = new Float64Array(cap), cy = new Float64Array(cap), cz = new Float64Array(cap);
+    var child = new Int32Array(cap * 8), body = new Int32Array(cap), cells = 0;
+    function cell(l, t, f, sz) {
+      if (cells >= cap) return -1;
+      var c = cells++;
+      cl[c] = l;
+      ct[c] = t;
+      cf[c] = f;
+      cs[c] = sz;
+      cm[c] = cx[c] = cy[c] = cz[c] = 0;
+      body[c] = -1;
+      for (var q = 0; q < 8; q++) child[8 * c + q] = -1;
+      return c;
+    }
+    function octant(c, b) {
+      var h = cs[c] / 2;
+      return (x[b] >= cl[c] + h ? 1 : 0) + (y[b] >= ct[c] + h ? 2 : 0) + (z[b] >= cf[c] + h ? 4 : 0);
+    }
+    function sub(c, q) {
+      var h = cs[c] / 2, sc = child[8 * c + q];
+      if (sc < 0) sc = child[8 * c + q] = cell(cl[c] + (q & 1 ? h : 0), ct[c] + (q & 2 ? h : 0), cf[c] + (q & 4 ? h : 0), h);
+      return sc;
+    }
+    function add(c, b) {
+      cm[c] += 1;
+      cx[c] += x[b];
+      cy[c] += y[b];
+      cz[c] += z[b];
+    }
+    function insert(root, b) {
+      var c = root, depth = 0;
+      for (;;) {
+        add(c, b);
+        if (body[c] === -1 && cm[c] === 1) {
+          body[c] = b;
+          return;
+        }
+        if (body[c] >= 0) {
+          var old = body[c];
+          body[c] = -2;
+          if (depth > 40) return;
+          var so = sub(c, octant(c, old));
+          if (so < 0) return;
+          add(so, old);
+          body[so] = old;
+        }
+        if (depth++ > 40) return;
+        var sc = sub(c, octant(c, b));
+        if (sc < 0) return;
+        c = sc;
+      }
+    }
+    var stack = new Int32Array(cap);
+    var G = p.gravitationalConstant, theta = 1 / p.theta, overlap = 1 - Math.max(0, Math.min(1, p.avoidOverlap));
+    function repel(b) {
+      var top = 0, ox = x[b], oy = y[b], oz = z[b];
+      stack[top++] = 0;
+      while (top) {
+        var c = stack[--top];
+        if (cm[c] === 0 || body[c] === b) continue;
+        var dx = cx[c] / cm[c] - ox, dy = cy[c] / cm[c] - oy, dz = cz[c] / cm[c] - oz;
+        var dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        if (body[c] === -2 && dist / cs[c] <= theta) {
+          for (var q = 0; q < 8; q++) if (child[8 * c + q] >= 0) stack[top++] = child[8 * c + q];
+          continue;
+        }
+        if (dist === 0) {
+          dist = 0.1 * rnd();
+          dx = dist;
+        }
+        if (overlap < 1 && R[b]) dist = Math.max(0.1 + overlap * R[b], dist - R[b]);
+        var force = (G * cm[c] * deg[b]) / (dist * dist);
+        fx[b] += dx * force;
+        fy[b] += dy * force;
+        fz[b] += dz * force;
+      }
+    }
+    var it = 0, last = Date.now(), dt = p.timestep, damping = p.damping, maxV = p.maxVelocity;
+    function clamp(v) {
+      return v > maxV ? maxV : v < -maxV ? -maxV : v;
+    }
+    for (it = 1; it <= p.iterations; it++) {
+      var minX = Infinity, minY = Infinity, minZ = Infinity, maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+      for (i = 0; i < n; i++) {
+        if (x[i] < minX) minX = x[i];
+        if (x[i] > maxX) maxX = x[i];
+        if (y[i] < minY) minY = y[i];
+        if (y[i] > maxY) maxY = y[i];
+        if (z[i] < minZ) minZ = z[i];
+        if (z[i] > maxZ) maxZ = z[i];
+      }
+      cells = 0;
+      var root = cell(minX - 0.5, minY - 0.5, minZ - 0.5, Math.max(maxX - minX, maxY - minY, maxZ - minZ) + 1);
+      for (i = 0; i < n; i++) insert(root, i);
+      for (i = 0; i < n; i++) {
+        fx[i] = -x[i] * p.centralGravity * deg[i];
+        fy[i] = -y[i] * p.centralGravity * deg[i];
+        fz[i] = -z[i] * p.centralGravity * deg[i];
+        repel(i);
+      }
+      for (k = 0; k < E.length; k += 2) {
+        i = E[k];
+        j = E[k + 1];
+        var ex = x[i] - x[j], ey = y[i] - y[j], ez = z[i] - z[j];
+        var len = Math.max(Math.sqrt(ex * ex + ey * ey + ez * ez), 0.01);
+        var sf = (p.springConstant * (p.springLength - len)) / len;
+        fx[i] += ex * sf;
+        fy[i] += ey * sf;
+        fz[i] += ez * sf;
+        fx[j] -= ex * sf;
+        fy[j] -= ey * sf;
+        fz[j] -= ez * sf;
+      }
+      var fastest = 0;
+      for (i = 0; i < n; i++) {
+        vx[i] = clamp(vx[i] + (fx[i] - damping * vx[i]) * dt);
+        vy[i] = clamp(vy[i] + (fy[i] - damping * vy[i]) * dt);
+        vz[i] = clamp(vz[i] + (fz[i] - damping * vz[i]) * dt);
+        x[i] += vx[i] * dt;
+        y[i] += vy[i] * dt;
+        z[i] += vz[i] * dt;
+        var v = Math.sqrt(vx[i] * vx[i] + vy[i] * vy[i] + vz[i] * vz[i]);
+        if (v > fastest) fastest = v;
+      }
+      if (fastest < p.minVelocity) break;
+      if (report && Date.now() - last >= p.reportMs) {
+        last = Date.now();
+        report(x, y, z, it, false);
+      }
+    }
+    it = Math.min(it, p.iterations);
+    if (report) report(x, y, z, it, true);
+    return { x: x, y: y, z: z, iterations: it };
+  }
+
+  // Cells of the face atlas for the 3D view. The atlas is a square texture only as large as the cells
+  // need, at most 4096 px (64 MB on the graphics card) and never above the device's maxTextureSize; with
+  // many performers the cells get smaller, down to minCell, and then only the first `count` performers
+  // (the largest nodes) get a cell.
+  function atlasGrid(n, maxTexture, wantCell, minCell) {
+    var limit = Math.min(maxTexture || 4096, 4096), c = Math.min(wantCell, limit);
+    while (c > minCell && Math.pow(Math.floor(limit / c), 2) < n) c = Math.max(minCell, Math.floor(c * 0.75));
+    var per = Math.max(1, Math.min(Math.floor(limit / c), Math.ceil(Math.sqrt(Math.max(n, 1)))));
+    return { cell: c, per: per, side: per * c, count: Math.min(n, per * per) };
+  }
+
   var LAYOUT_PARAMS = {
     gravitationalConstant: -70, centralGravity: 0.012, springLength: 110, springConstant: 0.06, avoidOverlap: 0.5,
     damping: 0.4, timestep: 0.5, maxVelocity: 50, minVelocity: 0.1, theta: 0.5, iterations: 500, seed: 7, reportMs: 400,
@@ -785,6 +962,7 @@
     { key: "storeFaces", type: "BOOLEAN", def: false, alwaysStore: true, section: "faces", label: "setStoreFaces", help: "setStoreFacesHelp" },
     { key: "disableFaceCrops", type: "BOOLEAN", def: false, invert: true, section: "faces", label: "setUseCrops", help: "setUseCropsHelp" },
     { key: "fallbackCrop", type: "STRING", def: "auto", options: { auto: "cropAuto", top: "cropTop", upperThird: "cropUpperThird", center: "cropCenter" }, section: "faces", label: "setFallbackCrop", help: "setFallbackCropHelp" },
+    { key: "nodeShape3d", type: "STRING", def: "sphere", options: { sphere: "shapeSphere", chip: "shapeChip", flat: "shapeFlat" }, section: "display", label: "setNodeShape3d", help: "setNodeShape3dHelp" },
     { key: "labelZoom", type: "NUMBER", def: 8, min: 0, max: 24, section: "display", label: "setLabelZoom", help: "setLabelZoomHelp" },
     { key: "genderColors", type: "JSON", def: {}, section: "display", label: "setGenderColors", editor: "colors" },
     { key: "startLimit", type: "NUMBER", def: 400, min: 50, max: 10000, step: 50, zeroIsDefault: true, section: "display", label: "setStartLimit", help: "setStartLimitHelp" },
@@ -991,6 +1169,7 @@
     out.yearFrom = clampNumber(q.get("from"), 0, 0, 9999);
     out.yearTo = clampNumber(q.get("to"), 0, 0, 9999);
     out.showAll = q.get("all") === "1";
+    out.view = q.get("view") === "3d" ? "3d" : "2d"; // ?view=3d: the 3D view (beta)
     // opened after the layout: ?focus=<performer id>, ?path=<id>,<id> (shortest path between the two),
     // ?edge=<id>,<id>
     var focus = q.get("focus");
@@ -1022,6 +1201,7 @@
     if (f.yearFrom) q.set("from", f.yearFrom);
     if (f.yearTo) q.set("to", f.yearTo);
     if (extra.showAll) q.set("all", "1");
+    if (extra.view === "3d") q.set("view", "3d");
     if (extra.path) q.set("path", extra.path.join(","));
     else if (extra.edge) q.set("edge", extra.edge.join(","));
     else if (extra.focus) q.set("focus", extra.focus);
@@ -1212,6 +1392,8 @@
     computeGraph: computeGraph,
     limitGraph: limitGraph,
     runLayout: runLayout,
+    runLayout3D: runLayout3D,
+    atlasGrid: atlasGrid,
     LAYOUT_PARAMS: LAYOUT_PARAMS,
     shortestPath: shortestPath,
     SETTINGS: SETTINGS,

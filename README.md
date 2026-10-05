@@ -25,6 +25,17 @@ https://max-dev42.github.io/stash-plugins/index.yml
 
 then install **Performer Network** from that source. Stash shows updates there.
 
+### Beta versions
+
+New features come out as betas first, from a separate source:
+
+```
+https://max-dev42.github.io/stash-plugins/beta/index.yml
+```
+
+Add it as a second source, uninstall Performer Network and install it again from the beta source. It is
+the same plugin (same ID), so your settings stay. To go back, do the same with the normal source.
+
 ### By hand
 
 Copy the `plugin/` folder into Stash's plugins directory under the name `stash-performer-network` (the

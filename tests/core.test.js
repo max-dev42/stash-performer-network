@@ -446,6 +446,8 @@ test("readView and writeView: the copied link opens the same view", () => {
   for (const k of ["countBy", "maxCast", "favOn", "favMode", "minStrength", "studio", "tags", "tagMode", "sceneStars", "watchedOnly", "genders", "yearFrom", "yearTo"]) assert.deepEqual(back[k], v[k], k);
   assert.equal(back.focus, a);
   assert.deepEqual(C.readView(q(C.writeView(v, st, b, { path: [a, z], focus: a })), st, b).path, [a, z]);
+  assert.equal(C.readView(q(C.writeView(v, st, b, { view: "3d" })), st, b).view, "3d");
+  assert.equal(C.readView(q(""), st, b).view, "2d");
   const e = C.readView(q(C.writeView(v, st, b, { edge: [a, z], focus: a })), st, b);
   assert.deepEqual([e.edge, e.focus], [[a, z], null]);
 });
@@ -525,4 +527,29 @@ test("scene_count from the scenes when Stash does not send it; orgasm counts att
   assert.equal(b.orgasmsLoaded, true);
   assert.equal(b.performers[id].o_counter, 4);
   assert.equal(C.prepareData(fx.data()).orgasmsLoaded, true); // data that already has them
+});
+
+test("runLayout3D: deterministic, finite, linked performers end up closer than the rest", () => {
+  // two triangles joined by one edge, plus a loose node
+  const edges = new Int32Array([0, 1, 1, 2, 2, 0, 3, 4, 4, 5, 5, 3, 2, 3]);
+  const input = { n: 7, edges, radius: new Float64Array(7).fill(10), params: Object.assign({}, C.LAYOUT_PARAMS, { iterations: 300, reportMs: 1e9 }) };
+  const a = C.runLayout3D(input), b = C.runLayout3D(input);
+  assert.deepEqual([...a.z], [...b.z]);
+  for (const v of [...a.x, ...a.y, ...a.z]) assert.ok(Number.isFinite(v));
+  const d = (i, j) => Math.hypot(a.x[i] - a.x[j], a.y[i] - a.y[j], a.z[i] - a.z[j]);
+  assert.ok(d(0, 1) < d(0, 6) && d(3, 4) < d(3, 6));
+  assert.ok(new Set([...a.z].map((v) => Math.round(v))).size > 1); // really three-dimensional
+  let reports = 0;
+  C.runLayout3D(Object.assign({}, input, { params: Object.assign({}, input.params, { reportMs: 0 }) }), () => reports++);
+  assert.ok(reports > 1);
+});
+
+test("atlasGrid: only as large as needed, at most 4096 px, smaller cells for many performers", () => {
+  assert.deepEqual(C.atlasGrid(400, 8192, 128, 48), { cell: 128, per: 20, side: 2560, count: 400 });
+  const big = C.atlasGrid(4581, 8192, 128, 48);
+  assert.ok(big.cell < 128 && big.count === 4581 && big.side <= 4096);
+  const phone = C.atlasGrid(4581, 2048, 128, 48);
+  assert.ok(phone.side <= 2048 && phone.cell === 48 && phone.count < 4581); // then only the largest nodes get a face
+  assert.ok(C.atlasGrid(10, 16384, 128, 48).side <= 4096);
+  assert.equal(C.atlasGrid(1, 4096, 128, 48).side, 128);
 });

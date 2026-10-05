@@ -11,6 +11,7 @@ Stash under Settings → Plugins → Performer Network.
 | Faces | Store face positions on performers ([faces.md](faces.md)) | `storeFaces`, boolean: `true` = store | `false` (see [faces.md](faces.md#default)) |
 | Faces | Use face crops | `disableFaceCrops`, boolean: `true` = face crops **off** (crop as in `fallbackCrop`, MediaPipe not loaded, nothing stored) | `false` (face crops on) |
 | Faces | Crop without a face ([faces.md](faces.md#crop-without-a-face)) | `fallbackCrop`, string: `auto`, `top`, `upperThird` or `center` | `auto` |
+| Display | Performers in the 3D view (beta) | `nodeShape3d`, string: `sphere` (a lit ball with the face), `chip` (a coin with a rim) or `flat` | `sphere` |
 | Display | Minimum name size on screen (px; 0 = always) | `labelZoom`, number 0 to 24 | `8` |
 | Display | Large networks start with at most this many performers (see below) | `startLimit`, number 50 to 10000 (0 = default) | `400` |
 | Display | Colours per gender (colour picker, reset) | `genderColors`, JSON string, e.g. `{"FEMALE": "#e0559a"}` | built-in colours |

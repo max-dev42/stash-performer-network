@@ -2,6 +2,26 @@
 
 All notable changes are listed here. Versions follow [Semantic Versioning](https://semver.org/).
 
+## 0.3.0-beta.1 (3D view)
+
+A beta: it comes from the beta source only, see the README. Feedback is welcome in the forum thread.
+
+- 3D view: the "3D" button next to the title (or `?view=3d`) shows the network in three dimensions; drag
+  to turn, wheel or two fingers to zoom, right or Shift drag to move. Filters, rankings, search, paths,
+  links and the detail panels work as in 2D.
+- Performers as spheres, chips or flat discs with their face (setting "Performers in the 3D view"); all
+  three cost the same.
+- Cards for a hovered or tapped performer and for a hovered edge; a click on an edge opens its detail.
+- The whole network is two draw calls; edges get fainter the more there are, a fog fades the back, and a
+  large network starts at the favorites.
+- In 3D the detail panel and the cards are slightly tilted, with glass and a shadow (no animation with
+  reduced motion).
+- Needs WebGL; without it there is no 3D button, and if WebGL fails the page returns to 2D.
+
+Known: with thousands of performers the 3D picture is a dense cloud; filters or the reduced start view
+help. Laying out 4,581 performers takes about 11 s. Above 8,000 edges, edges are picked on click only.
+three.js (MIT) is bundled and loaded only for 3D.
+
 ## 0.2.0 (links, rankings, phones and years)
 
 - Every view has a link: the copy button next to the gear puts the filters, the counting and the
