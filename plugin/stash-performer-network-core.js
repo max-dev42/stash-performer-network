@@ -37,7 +37,10 @@
       "6.94 15.53 6.74 13.46 5.03 12.75 3.43 14.07 1.93 12.57 3.25 10.97 2.54 9.26 0.47 9.06 0.47 6.94 2.54 6.74 3.25 5.03 " +
       "1.93 3.43 3.43 1.93 5.03 3.25 6.74 2.54 6.94 0.47 9.06 0.47 9.26 2.54 10.97 3.25 12.57 1.93 14.07 3.43 12.75 5.03Z" +
       "M10.4 8A2.4 2.4 0 1 0 5.6 8A2.4 2.4 0 1 0 10.4 8Z",
+    copy: "M5 5H15V15H5Z M6.5 6.5V13.5H13.5V6.5Z M1 1H11V3.5H9.5V2.5H2.5V9.5H3.5V11H1Z",
+    filter: "M1 2H15L9.5 8.5V14L6.5 12.5V8.5Z",
   };
+  var ICONS_EVENODD = { gear: true, copy: true };
 
 
   function byNumber(a, b) {
@@ -164,7 +167,7 @@
       return { id: g.id, title: g.title || file || folder || null, images: g.image_count || 0, cover: localUrl(g.paths && g.paths.cover) };
     });
     return {
-      title: sc.title || (sc.files && sc.files[0] ? sc.files[0].basename : "Scene " + sc.id),
+      title: sc.title || (sc.files && sc.files[0] ? sc.files[0].basename : null), // null: the UI names it (untitledScene)
       date: sc.date || null,
       screenshot: localUrl(sc.paths && sc.paths.screenshot),
       galleries: galleries,
@@ -182,6 +185,14 @@
   // Tags per scene are the largest part of the scene data (5.3 of 7.6 MB in a library of 19,500 scenes),
   // so the main query leaves them out and they are attached later, page by page; base.tagsLoaded says
   // whether the tag filter can be applied yet (complete = the last page has been attached).
+  // Performer orgasm counts (Stash's performer.o_counter), loaded after the network.
+  function attachOrgasms(base, list) {
+    (list || []).forEach(function (p) {
+      if (base.performers[p.id]) base.performers[p.id].o_counter = p.o_counter || 0;
+    });
+    base.orgasmsLoaded = true;
+  }
+
   function attachTags(base, scenes, complete) {
     (scenes || []).forEach(function (sc) {
       var s = base.sceneById[sc.id];
@@ -265,6 +276,8 @@
         tagIds: tagIds,
         group: groups[0] || null, // a scene in several groups counts for the lowest group id only
         performers: ids,
+        date: sc.date || null, // YYYY-MM-DD (Stash may also return YYYY or YYYY-MM)
+        year: yearOf(sc.date),
         detail: false,
       };
       return "title" in sc || "paths" in sc ? Object.assign(out, sceneDetail(sc)) : out;
@@ -272,6 +285,20 @@
     var sceneById = {};
     scenes.forEach(function (sc) {
       sceneById[sc.id] = sc;
+    });
+    // scene_count comes from the scenes when the query leaves it out (it costs Stash a count per performer)
+    var sceneCount = {};
+    scenes.forEach(function (sc) {
+      sc.performers.forEach(function (id) {
+        sceneCount[id] = (sceneCount[id] || 0) + 1;
+      });
+    });
+    Object.keys(performers).forEach(function (id) {
+      if (performers[id].scene_count == null) performers[id].scene_count = sceneCount[id] || 0;
+    });
+    // the performers' orgasm counts may follow later (attachOrgasms)
+    var orgasmsLoaded = Object.keys(performers).some(function (id) {
+      return "o_counter" in performers[id];
     });
 
     var genders = ((data.genders && data.genders.enumValues) || []).map(function (v) {
@@ -284,12 +311,35 @@
       colors[g] = GENDER_COLORS[g] || SPARE_COLORS[spare++ % SPARE_COLORS.length];
     });
 
+    var years = { min: null, max: null, undated: 0 };
+    scenes.forEach(function (sc) {
+      if (sc.year == null) return years.undated++;
+      if (years.min == null || sc.year < years.min) years.min = sc.year;
+      if (years.max == null || sc.year > years.max) years.max = sc.year;
+    });
+
     var plugins = data.configuration && data.configuration.plugins;
     var settings = (plugins && plugins[PLUGIN_ID]) || {};
     return {
       studios: studios, performers: performers, scenes: scenes, sceneById: sceneById, tags: tags, tagsLoaded: tagsLoaded,
-      genders: genders, genderColors: colors, settings: settings,
+      genders: genders, genderColors: colors, settings: settings, years: years, orgasmsLoaded: orgasmsLoaded || !scenes.length,
     };
+  }
+
+  function yearOf(date) {
+    var m = /^(\d{4})/.exec(date || "");
+    return m ? Number(m[1]) : null;
+  }
+
+  // First and last date among scenes (for "together from ... to ..."); null if none has a date.
+  function dateSpan(scenes) {
+    var first = null, last = null;
+    scenes.forEach(function (sc) {
+      if (!sc.date) return;
+      if (first == null || sc.date < first) first = sc.date;
+      if (last == null || sc.date > last) last = sc.date;
+    });
+    return first == null ? null : { first: first, last: last };
   }
 
   function genderOf(base, p) {
@@ -304,6 +354,8 @@
       if (f.sceneStars && (sc.rating == null || sc.rating < f.sceneStars * 20)) return false;
       if (f.watchedOnly && !sc.plays) return false;
       if (f.orgasmOnly && !sc.orgasmCount) return false;
+      // a year range leaves out scenes without a date
+      if ((f.yearFrom || f.yearTo) && (sc.year == null || (f.yearFrom && sc.year < f.yearFrom) || (f.yearTo && sc.year > f.yearTo))) return false;
       if (tagIds.length) {
         var hit = f.tagMode === "all"
           ? tagIds.every(function (t) { return sc.tagIds[t]; })
@@ -733,13 +785,13 @@
     { key: "storeFaces", type: "BOOLEAN", def: false, alwaysStore: true, section: "faces", label: "setStoreFaces", help: "setStoreFacesHelp" },
     { key: "disableFaceCrops", type: "BOOLEAN", def: false, invert: true, section: "faces", label: "setUseCrops", help: "setUseCropsHelp" },
     { key: "fallbackCrop", type: "STRING", def: "auto", options: { auto: "cropAuto", top: "cropTop", upperThird: "cropUpperThird", center: "cropCenter" }, section: "faces", label: "setFallbackCrop", help: "setFallbackCropHelp" },
-    { key: "nodeSizeBy", type: "STRING", def: "scenes", options: { scenes: "sizeScenes", orgasms: "sizeOrgasm" }, legacyValues: { o: "orgasms" }, section: "display", label: "sizeBy" },
     { key: "labelZoom", type: "NUMBER", def: 8, min: 0, max: 24, section: "display", label: "setLabelZoom", help: "setLabelZoomHelp" },
     { key: "genderColors", type: "JSON", def: {}, section: "display", label: "setGenderColors", editor: "colors" },
     { key: "startLimit", type: "NUMBER", def: 400, min: 50, max: 10000, step: 50, zeroIsDefault: true, section: "display", label: "setStartLimit", help: "setStartLimitHelp" },
     { key: "defaultCountBy", type: "STRING", def: "scenes", options: { scenes: "countScenes", productions: "countProductions" }, section: "defaults", label: "countBy" },
     { key: "defaultMaxCast", type: "NUMBER", def: 12, min: 2, max: 40, zeroIsDefault: true, section: "defaults", label: "maxCast" },
     { key: "defaultFavMode", type: "STRING", def: "partners", options: { partners: "favPartners", only: "favOnly" }, section: "defaults", label: "setFavMode" },
+    { key: "nodeSizeBy", type: "STRING", def: "scenes", options: { scenes: "sizeScenes", orgasms: "sizeOrgasm" }, legacyValues: { o: "orgasms" }, section: "defaults", label: "sizeBy" },
     { key: "defaultFilters", type: "JSON", def: {}, section: "defaults", label: "setDefaultFilters", editor: "filters", legacyKeys: { orgasmOnly: "oOnly" } },
   ];
   var SETTING = {};
@@ -832,6 +884,148 @@
     if (v == null && LEGACY_PARAMS[name]) v = q.get(LEGACY_PARAMS[name]);
     var map = LEGACY_PARAM_VALUES[name];
     return v != null && map && Object.prototype.hasOwnProperty.call(map, v) ? map[v] : v;
+  }
+
+  // Rankings of the shown network: the strongest pairs (edge weight) and the performers with the most
+  // partners. Ties are broken by name (compare, e.g. Intl.Collator), so the order does not depend on ids.
+  function rankings(graph, performers, limit, compare) {
+    function name(id) {
+      return performers[id] ? performers[id].name : String(id);
+    }
+    var pairs = graph.edges.slice().sort(function (x, y) {
+      return y.weight - x.weight || compare(name(x.from), name(y.from)) || compare(name(x.to), name(y.to));
+    });
+    var partners = graph.nodes
+      .map(function (id) {
+        return { id: id, count: Object.keys(graph.neighbours[id] || {}).length };
+      })
+      .filter(function (x) {
+        return x.count > 0;
+      })
+      .sort(function (x, y) {
+        return y.count - x.count || compare(name(x.id), name(y.id));
+      });
+    return {
+      pairs: pairs.slice(0, limit).map(function (e) {
+        return { id: e.from + "-" + e.to, from: e.from, to: e.to, weight: e.weight };
+      }),
+      partners: partners.slice(0, limit),
+    };
+  }
+
+  // Link to Stash's scene list filtered to scenes with all of the given performers ({id, name}). Stash
+  // keeps each criterion as JSON in a "c" parameter, with braces outside strings written as parentheses
+  // (ListFilterModel.translateJSON in Stash's UI). Stash applies none of the network's own filters.
+  function scenesUrl(performers) {
+    var criterion = {
+      type: "performers",
+      modifier: performers.length > 1 ? "INCLUDES_ALL" : "INCLUDES",
+      value: {
+        items: performers.map(function (p) {
+          return { id: String(p.id), label: p.name };
+        }),
+        excluded: [],
+      },
+    };
+    var inString = false, escaped = false;
+    var c = JSON.stringify(criterion)
+      .split("")
+      .map(function (ch) {
+        if (escaped) {
+          escaped = false;
+          return ch;
+        }
+        if (ch === "\\" && inString) escaped = true;
+        else if (ch === '"') inString = !inString;
+        else if (!inString && ch === "{") return "(";
+        else if (!inString && ch === "}") return ")";
+        return ch;
+      })
+      .join("");
+    return "/scenes?c=" + encodeURIComponent(c);
+  }
+
+  // The view in the URL (docs/settings.md, "URL parameters"). readView turns the query into filter values
+  // (settings and their defaultFilters apply where a parameter is absent); writeView is the reverse, for
+  // "Copy link to this view": it writes what differs from what the page would open with anyway, so
+  // readView(writeView(f)) gives f back. count is always written, because without it the receiving
+  // browser would fall back to its own last choice (sessionStorage).
+  var COUNT_MODES = ["scenes", "productions"];
+  function clampNumber(v, d, lo, hi) {
+    var n = Number(v);
+    return v != null && v !== "" && isFinite(n) ? Math.min(hi, Math.max(lo, n)) : d;
+  }
+  function performerPair(v, b) {
+    var ids = (v || "").split(",");
+    return ids.length === 2 && ids[0] !== ids[1] && b.performers[ids[0]] && b.performers[ids[1]] ? ids : null;
+  }
+  function readView(q, st, b) {
+    var df = st.defaultFilters || {}, out = {};
+    out.maxCast = clampNumber(q.get("maxCast"), st.defaultMaxCast, 2, 40);
+    out.favMode = ["partners", "only"].indexOf(q.get("favMode")) >= 0 ? q.get("favMode") : st.defaultFavMode;
+    out.favOn = q.get("fav") === "1";
+    out.minStrength = clampNumber(q.get("min"), 1, 1, 10);
+    var size = queryParam(q, "size");
+    out.sizeBy = ["scenes", "orgasms"].indexOf(size) >= 0 ? size : st.nodeSizeBy;
+    var studio = q.has("studio") ? q.get("studio") : df.studio || ""; // ?studio= (empty) = all studios
+    out.studio = b.studios[studio] ? studio : "";
+    var tags = q.get("tags") != null ? q.get("tags").split(",") : df.tags || [];
+    out.tags = tags.map(String).filter(function (id, i, a) {
+      return b.tags[id] && a.indexOf(id) === i;
+    });
+    out.tagMode = (q.get("tagMode") || df.tagMode) === "all" ? "all" : "any";
+    out.sceneStars = clampNumber(q.get("sceneStars"), clampNumber(df.sceneStars, 0, 0, 5), 0, 5);
+    out.perfStars = clampNumber(q.get("perfStars"), clampNumber(df.perfStars, 0, 0, 5), 0, 5);
+    out.watchedOnly = q.get("watched") != null ? q.get("watched") === "1" : !!df.watchedOnly;
+    var orgasms = queryParam(q, "orgasms");
+    out.orgasmOnly = orgasms != null ? orgasms === "1" : !!df.orgasmOnly;
+    // ?genders=FEMALE,MALE: only these are shown; absent = all
+    var shown = q.get("genders") != null ? q.get("genders").split(",") : null;
+    out.genders = {};
+    (b.genders || []).forEach(function (g) {
+      out.genders[g] = !shown || shown.indexOf(g) >= 0;
+    });
+    var count = q.get("count");
+    out.countBy = COUNT_MODES.indexOf(count) >= 0 ? count : null; // null: the caller decides
+    // ?from=<year>&to=<year>: scenes of these years only (0 or absent = open end)
+    out.yearFrom = clampNumber(q.get("from"), 0, 0, 9999);
+    out.yearTo = clampNumber(q.get("to"), 0, 0, 9999);
+    out.showAll = q.get("all") === "1";
+    // opened after the layout: ?focus=<performer id>, ?path=<id>,<id> (shortest path between the two),
+    // ?edge=<id>,<id>
+    var focus = q.get("focus");
+    out.focus = focus && b.performers[focus] ? focus : null;
+    out.path = performerPair(q.get("path"), b);
+    out.edge = performerPair(q.get("edge"), b); // ?edge=<id>,<id>: the edge between the two, as if clicked
+    return out;
+  }
+  function writeView(f, st, b, extra) {
+    extra = extra || {};
+    var d = readView(new URLSearchParams(""), st, b), q = new URLSearchParams();
+    q.set("count", f.countBy);
+    if (f.maxCast !== d.maxCast) q.set("maxCast", f.maxCast);
+    if (f.favOn) q.set("fav", "1");
+    if (f.favMode !== d.favMode) q.set("favMode", f.favMode);
+    if (f.minStrength !== d.minStrength) q.set("min", f.minStrength);
+    if (f.sizeBy !== d.sizeBy) q.set("size", f.sizeBy);
+    if (f.studio !== d.studio) q.set("studio", f.studio);
+    if (f.tags.join(",") !== d.tags.join(",")) q.set("tags", f.tags.join(","));
+    if (f.tagMode !== d.tagMode) q.set("tagMode", f.tagMode);
+    if (f.sceneStars !== d.sceneStars) q.set("sceneStars", f.sceneStars);
+    if (f.perfStars !== d.perfStars) q.set("perfStars", f.perfStars);
+    if (f.watchedOnly !== d.watchedOnly) q.set("watched", f.watchedOnly ? "1" : "0");
+    if (f.orgasmOnly !== d.orgasmOnly) q.set("orgasms", f.orgasmOnly ? "1" : "0");
+    var genders = (b.genders || []).filter(function (g) {
+      return f.genders[g];
+    });
+    if (genders.length !== (b.genders || []).length) q.set("genders", genders.join(","));
+    if (f.yearFrom) q.set("from", f.yearFrom);
+    if (f.yearTo) q.set("to", f.yearTo);
+    if (extra.showAll) q.set("all", "1");
+    if (extra.path) q.set("path", extra.path.join(","));
+    else if (extra.edge) q.set("edge", extra.edge.join(","));
+    else if (extra.focus) q.set("focus", extra.focus);
+    return q.toString().replace(/%2C/g, ","); // commas are fine in a query and easier to read
   }
 
   // Detector version: bfsr2 (0.1.1) adds the second attempt on the top square of tall images. Results of
@@ -969,10 +1163,11 @@
     return cut === big[max] ? cut + 1e-6 : cut;
   }
 
-  // Arguments for the patch.before("MainNavBar.MenuItems") callback: the props with item appended to the
-  // children, all other arguments unchanged. Whatever goes wrong, the original arguments come back, so
-  // Stash's own menu items still render. toArray is React.Children.toArray.
-  function withNavChild(args, item, toArray) {
+  // Arguments for a patch.before callback that adds one child (the navbar entry, the button on the
+  // performer page): the props with item appended to the children, all other arguments unchanged.
+  // Whatever goes wrong, the original arguments come back, so Stash's own content still renders.
+  // toArray is React.Children.toArray.
+  function withChild(args, item, toArray) {
     args = Array.prototype.slice.call(args || []);
     try {
       var props = args[0];
@@ -986,7 +1181,7 @@
 
   var SPNCore = {
     PLUGIN_ID: PLUGIN_ID,
-    withNavChild: withNavChild,
+    withChild: withChild,
     blockedRequest: blockedRequest,
     createRequestGuard: createRequestGuard,
     imageMinRadius: imageMinRadius,
@@ -995,6 +1190,7 @@
     UNKNOWN: UNKNOWN,
     ICON_BOX: ICON_BOX,
     ICONS: ICONS,
+    ICONS_EVENODD: ICONS_EVENODD,
     byNumber: byNumber,
     pairKey: pairKey,
     localUrl: localUrl,
@@ -1009,6 +1205,7 @@
     I18n: I18n,
     prepareData: prepareData,
     attachTags: attachTags,
+    attachOrgasms: attachOrgasms,
     attachSceneDetails: attachSceneDetails,
     genderOf: genderOf,
     selectScenes: selectScenes,
@@ -1024,6 +1221,11 @@
     readSettings: readSettings,
     settingsInput: settingsInput,
     queryParam: queryParam,
+    readView: readView,
+    rankings: rankings,
+    dateSpan: dateSpan,
+    scenesUrl: scenesUrl,
+    writeView: writeView,
     FACE_FIELD: FACE_FIELD,
     FACE_VERSION: FACE_VERSION,
     readFaceField: readFaceField,

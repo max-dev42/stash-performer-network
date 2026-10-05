@@ -149,7 +149,7 @@
 fieldset.spn-field { min-width: 0; }
 .spn-disabled { opacity: 0.55; }
 .spn-head { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; margin-bottom: 1rem; }
-.spn-head h4 { margin: 0; }
+.spn-head h4 { margin: 0 auto 0 0; }
 .spn-gear { font-size: 1rem; line-height: 1; padding: 0.25rem 0.45rem; }
 /* inline SVG icons (stash-performer-network-core.js, ICONS): sized like the text, coloured by currentColor */
 .spn-icon { display: inline-block; width: 1em; height: 1em; vertical-align: -0.125em; flex: none; }
@@ -184,8 +184,30 @@ fieldset.spn-field { min-width: 0; }
   white-space: pre-line; font-family: inherit; font-size: 0.8rem;
   background: var(--spn-panel); color: var(--spn-text); border: 1px solid var(--spn-line);
 }
+/* collapsible sidebar: closed, a "Filters" button over the network opens it again */
+.spn-side-closed .spn-sidebar { display: none; }
+.spn-side-open { position: absolute; top: 0.75rem; left: 0.75rem; z-index: 3; display: flex; align-items: center; gap: 0.3rem; }
+.spn-page:not(.spn-side-closed) .spn-side-open { display: none; }
+.spn-side-close { font-size: 1.1rem; }
+/* narrow screens: the network fills the screen, the sidebar opens over it */
 @media (max-width: 767px) {
-  .spn-page { flex-direction: column; height: auto; }
-  .spn-sidebar { flex: 0 0 auto; border-right: 0; border-bottom: 1px solid var(--spn-line); }
-  .spn-main { height: 70vh; }
+  .spn-page { position: relative; height: calc(100vh - 3.5rem); height: calc(100dvh - 3.5rem); min-height: 360px; }
+  .spn-sidebar { position: absolute; inset: 0; z-index: 4; border-right: 0; }
+  /* the detail as a bottom sheet, so the network above stays visible and tappable */
+  .spn-detail { top: auto; bottom: 0.5rem; right: 0.5rem; width: calc(100% - 1rem); max-height: 45%; }
+  .spn-actions .btn { padding: 0.35rem 0.6rem; }
 }
+
+/* rankings in the sidebar */
+.spn-rank summary { font-weight: 600; cursor: pointer; }
+.spn-rank-head { margin: 0.5rem 0 0.2rem; font-size: 0.8rem; color: var(--spn-muted); }
+.spn-rank-list { list-style: none; margin: 0; padding: 0; }
+.spn-rank-item { display: flex; width: 100%; gap: 0.5rem; justify-content: space-between; padding: 0.15rem 0.25rem; border: 0; border-radius: 0.2rem; background: none; color: inherit; font-size: 0.85rem; text-align: left; }
+.spn-rank-item:hover, .spn-rank-item:focus-visible { background: rgba(127, 127, 127, 0.18); }
+.spn-rank-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.spn-rank-count { flex: none; color: var(--spn-muted); }
+
+/* years */
+.spn-years { justify-content: flex-start; }
+.spn-years .spn-year { width: auto; flex: 1 1 0; min-width: 0; }
+.spn-card-span { color: var(--spn-muted); font-size: 0.8rem; }

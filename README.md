@@ -49,13 +49,19 @@ The page is at `/performer-network`; the navbar gets a "Network" entry.
 - Force-directed layout: node size by scene count (or orgasm count), edge width by shared scenes or
   productions, border colour by gender, a heart for favorites, a badge for rated performers.
 - Hover a performer for a card, click to highlight their network, double-click to open their page.
-- Shortest path between two performers (Ctrl/Cmd-click or search), with the shared scenes of every step.
+  From a performer page, "Show in network" leads back to them in the network.
+- Shortest path between two performers (Ctrl/Cmd-click, search, or "Path from here" on touch screens),
+  with the shared scenes of every step.
+- Works on phones: the network fills the screen, filters open over it.
 - Click an edge to see the shared scenes and image sets as tiles that link to Stash.
-- Filters: studio or network, scene tags (any/all), edge strength, performers per scene, favorites,
+- Rankings of the strongest pairs and of the performers with the most partners.
+- Filters: studio or network, years, scene tags (any/all), edge strength, performers per scene, favorites,
   gender, ratings, watched scenes and orgasm count.
 - Optional face crops, detected locally in the browser; the usage statistics the bundled MediaPipe library
   would send to Google are blocked ([details](docs/faces.md#no-requests-to-other-hosts)).
 - Settings dialog backed by Stash's plugin settings, so they are the same on every device.
+- Every view has a link: the copy button puts the filters and the highlighted performer, edge or path into a
+  URL you can bookmark or share ([URL parameters](docs/settings.md#url-parameters)).
 - Follows the Stash theme (dark or light) and the Stash interface language: English, German, French,
   Spanish, Italian.
 

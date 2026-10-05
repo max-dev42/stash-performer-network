@@ -4,7 +4,7 @@
 
 Nodes that are small on screen are drawn as dots in the gender colour. From a radius of 8 pixels on
 screen a node shows its image: coloured initials first, a square crop of the performer image as soon as
-it has loaded (see [Without a face](#without-a-face)), and then a face crop once face detection has run. With more than 800 such
+it has loaded (see [Crop without a face](#crop-without-a-face)), and then a face crop once face detection has run. With more than 800 such
 nodes in view, the 800 largest show their image and the others stay dots until you zoom in. Detection happens **in the
 browser** with MediaPipe's BlazeFace (short range) model, bundled with the plugin; there is no server
 component and no request leaves the Stash origin.
@@ -26,10 +26,10 @@ component and no request leaves the Stash origin.
 - With "Use face crops" switched off ([settings.md](settings.md)), MediaPipe is not loaded at all and
   every node shows the fallback crop.
 
-### Without a face
+### Crop without a face
 
 When no face is found, and for every node with face crops switched off, the node shows a square as wide
-as the image. The setting "Without a face" (`fallbackCrop`, [settings.md](settings.md)) decides where:
+as the image. The setting "Crop without a face" (`fallbackCrop`, [settings.md](settings.md)) decides where:
 
 | Value | Square |
 |---|---|

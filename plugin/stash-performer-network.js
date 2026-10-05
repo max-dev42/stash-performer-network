@@ -135,11 +135,12 @@
   // the tags per scene (5.3 MB) follow in the background; titles, screenshots and galleries are fetched
   // only for the scenes of an opened edge. The earlier single query repeated every performer in every
   // scene and returned 29.6 MB.
+  // The scenes come in pages of SCENE_PAGE (a few at a time), so the status line can show progress; one
+  // page of 2,000 took 0.07 s, all 19,500 at once 1.0 s. scene_count is counted from the scenes, and the
+  // performers' orgasm counts (0.2 s for Stash) follow in the background (QUERY_ORGASMS).
   var QUERY =
     "query PerformerNetwork {" +
-    " findScenes(filter: {per_page: -1}) { scenes { id rating100 play_count o_counter" +
-    "  performers { id } groups { group { id } } studio { id } } }" +
-    " findPerformers(filter: {per_page: -1}) { performers { id name gender favorite rating100 o_counter image_path scene_count custom_fields } }" +
+    " findPerformers(filter: {per_page: -1}) { performers { id name gender favorite rating100 image_path custom_fields } }" +
     " findGroups(filter: {per_page: -1}) { groups { id name } }" +
     " findStudios(filter: {per_page: -1}) { studios { id name parent_studio { id } } }" +
     " findTags(filter: {per_page: -1}) { tags { id name aliases } }" +
@@ -148,6 +149,11 @@
     "}";
   // in pages: one 5.3 MB answer cost a ~200 ms task (parsing and garbage collection) while faces were
   // detected; pages of TAG_PAGE scenes keep each step small
+  var QUERY_SCENES =
+    "query PerformerNetworkScenePage($page: Int, $per: Int) { findScenes(filter: {per_page: $per, page: $page, sort: \"id\", direction: ASC})" +
+    " { count scenes { id date rating100 play_count o_counter performers { id } groups { group { id } } studio { id } } } }";
+  var SCENE_PAGE = 2000, SCENE_PAGES_AT_ONCE = 3;
+  var QUERY_ORGASMS = "query PerformerNetworkOrgasms { findPerformers(filter: {per_page: -1}) { performers { id o_counter } } }";
   var QUERY_TAGS =
     "query PerformerNetworkTags($page: Int, $per: Int) { findScenes(filter: {per_page: $per, page: $page, sort: \"id\", direction: ASC})" +
     " { scenes { id tags { id } } } }";
@@ -225,7 +231,7 @@
     } else svg.setAttribute("aria-hidden", "true");
     var path = document.createElementNS(SVG_NS, "path");
     path.setAttribute("d", ICONS[name]);
-    if (name === "gear") path.setAttribute("fill-rule", "evenodd");
+    if (Core.ICONS_EVENODD[name]) path.setAttribute("fill-rule", "evenodd");
     svg.appendChild(path);
     return svg;
   }
@@ -644,6 +650,8 @@
       edgeByOrgasm: false,
       showIsolated: false,
       genders: {},
+      yearFrom: 0, // 0 = open end
+      yearTo: 0,
     };
     this.pics = {}; // performer id -> canvas or <img> drawn in the node (see drawNode)
     this.imageItems = {}; // performer id -> image job (see pumpImages)
@@ -657,7 +665,9 @@
     this.destroyed = false;
     var self = this;
     this.onKey = function (e) {
-      if (e.key === "Escape" && !self.modal && !e.defaultPrevented && !e.cancelBubble) self.clearMode();
+      if (e.key !== "Escape" || self.modal || e.defaultPrevented || e.cancelBubble) return;
+      if (self.sideOpen && self.narrow()) self.setSidebar(false); // the overlay first
+      else self.clearMode();
     };
     document.addEventListener("keydown", this.onKey);
     this.onHide = function () {
@@ -671,14 +681,74 @@
     return this.i18n.t(key, params);
   };
 
+  // All scenes in pages (QUERY_SCENES): the first page tells the total, the rest follow a few at a time.
+  NetworkView.prototype.loadScenes = function () {
+    var self = this, pages = [];
+    function page(n) {
+      return gql(QUERY_SCENES, { page: n, per: SCENE_PAGE }).then(function (d) {
+        pages[n - 1] = d.findScenes.scenes;
+        return d.findScenes.count;
+      });
+    }
+    function progress(total) {
+      var done = pages.reduce(function (sum, p) { return sum + (p ? p.length : 0); }, 0);
+      if (!self.destroyed && total > SCENE_PAGE) self.setStatus(self.t("loadingScenePages", { done: Math.min(done, total), total: total }));
+    }
+    return page(1).then(function (total) {
+      var last = Math.max(1, Math.ceil(total / SCENE_PAGE)), next = 2;
+      progress(total);
+      function worker() {
+        if (next > last || self.destroyed) return null;
+        return page(next++).then(function () {
+          progress(total);
+          return worker();
+        });
+      }
+      var workers = [];
+      for (var i = 0; i < SCENE_PAGES_AT_ONCE; i++) workers.push(worker());
+      return Promise.all(workers).then(function () {
+        // a scene added or removed while loading can shift a page: keep each id once
+        var seen = {}, all = [];
+        pages.forEach(function (p) {
+          (p || []).forEach(function (sc) {
+            if (!seen[sc.id]) all.push((seen[sc.id] = sc));
+          });
+        });
+        return all;
+      });
+    });
+  };
+
+  NetworkView.prototype.loadOrgasms = function () {
+    var self = this;
+    if (!this.orgasmsPromise)
+      this.orgasmsPromise = this.base.orgasmsLoaded
+        ? Promise.resolve()
+        : gql(QUERY_ORGASMS)
+            .then(function (d) {
+              if (self.destroyed) return;
+              Core.attachOrgasms(self.base, d.findPerformers.performers);
+              self.timing.orgasms = Math.round(performance.now() - self.timing.start);
+            })
+            .catch(function (e) {
+              console.error(PLUGIN_ID + ":", e);
+              self.base.orgasmsLoaded = true; // without counts rather than waiting for ever
+            })
+            .then(function () {
+              if (!self.destroyed && self.orgasmsArrived) self.orgasmsArrived();
+            });
+    return this.orgasmsPromise;
+  };
+
   NetworkView.prototype.start = function () {
     var self = this;
     this.buildLayout();
     this.setStatus(this.t("loading"));
-    Promise.all([gql(QUERY), loadScript(VENDOR + "vis-network/vis-network.min.js", "vis")])
+    Promise.all([gql(QUERY), this.loadScenes(), loadScript(VENDOR + "vis-network/vis-network.min.js", "vis")])
       .then(function (res) {
         if (self.destroyed) return;
         self.timing.data = Math.round(performance.now() - self.timing.start);
+        res[0].findScenes = { scenes: res[1] };
         self.base = prepareData(res[0]);
         self.base.genders.forEach(function (g) {
           self.f.genders[g] = true;
@@ -702,6 +772,9 @@
         }
         self.draw();
         self.prepareImages();
+        whenIdle(function () {
+          if (!self.destroyed) self.loadOrgasms();
+        });
       })
       .catch(function (e) {
         console.error(PLUGIN_ID + ":", e);
@@ -766,37 +839,46 @@
   // ?count= ?maxCast= ?favMode= ?size= ?studio= ?tags=1,2 ?tagMode=any|all ?sceneStars= ?perfStars= ?watched=1 ?orgasms=1
   // (older names still accepted: ?o=1, ?size=o; see Core.queryParam)
   NetworkView.prototype.applyDefaults = function () {
-    var f = this.f, st = this.settings, b = this.base, q;
+    var q;
     try {
       q = new URLSearchParams(location.search);
     } catch (e) {
       q = new URLSearchParams("");
     }
-    function num(v, d, lo, hi) {
-      var n = Number(v);
-      return v != null && v !== "" && isFinite(n) ? Math.min(hi, Math.max(lo, n)) : d;
-    }
-    var df = st.defaultFilters || {};
-    f.countBy = readCountBy(st.defaultCountBy);
-    f.maxCast = num(q.get("maxCast"), st.defaultMaxCast, 2, 40);
-    f.favMode = ["partners", "only"].indexOf(q.get("favMode")) >= 0 ? q.get("favMode") : st.defaultFavMode;
-    var size = Core.queryParam(q, "size");
-    f.sizeBy = ["scenes", "orgasms"].indexOf(size) >= 0 ? size : st.nodeSizeBy;
-    var studio = q.has("studio") ? q.get("studio") : df.studio || ""; // ?studio= (empty) = all studios
-    f.studio = b.studios[studio] ? studio : "";
-    var tags = q.get("tags") != null ? q.get("tags").split(",") : df.tags || [];
-    f.tags = tags.map(String).filter(function (id, i, a) {
-      return b.tags[id] && a.indexOf(id) === i;
+    var v = Core.readView(q, this.settings, this.base);
+    var f = this.f;
+    ["maxCast", "favMode", "favOn", "minStrength", "sizeBy", "studio", "tags", "tagMode", "sceneStars", "perfStars", "watchedOnly", "orgasmOnly", "genders", "yearFrom", "yearTo"].forEach(function (k) {
+      f[k] = v[k];
     });
-    f.tagMode = (q.get("tagMode") || df.tagMode) === "all" ? "all" : "any";
-    f.sceneStars = num(q.get("sceneStars"), num(df.sceneStars, 0, 0, 5), 0, 5);
-    f.perfStars = num(q.get("perfStars"), num(df.perfStars, 0, 0, 5), 0, 5);
-    f.watchedOnly = q.get("watched") != null ? q.get("watched") === "1" : !!df.watchedOnly;
-    var orgasms = Core.queryParam(q, "orgasms");
-    f.orgasmOnly = orgasms != null ? orgasms === "1" : !!df.orgasmOnly;
-    this.showAll = q.get("all") === "1"; // no reduced start view (see Core.limitGraph)
+    f.countBy = readCountBy(this.settings.defaultCountBy);
+    this.showAll = v.showAll; // no reduced start view (see Core.limitGraph)
+    this.initialView = v.focus || v.path || v.edge ? { focus: v.focus, path: v.path, edge: v.edge } : null; // opened once the layout is done
     // comparing and measuring: ?spnLayout=page (vis-network on the page) or worker, regardless of size
     this.layoutMode = ["page", "worker"].indexOf(q.get("spnLayout")) >= 0 ? q.get("spnLayout") : null;
+  };
+
+  // The current view as a link (Core.writeView), with the highlighted performer or path.
+  NetworkView.prototype.viewLink = function () {
+    var m = this.mode || {};
+    var query = Core.writeView(this.f, this.settings, this.base, {
+      showAll: this.showAll,
+      focus: m.kind === "focus" ? m.pid : null,
+      path: m.kind === "path" ? [m.nodes[0], m.nodes[m.nodes.length - 1]] : null,
+      edge: m.kind === "edge" ? [this.edgeIndex[m.id].from, this.edgeIndex[m.id].to] : null,
+    });
+    return location.origin + location.pathname + (query ? "?" + query : "");
+  };
+
+  NetworkView.prototype.copyLink = function () {
+    var self = this, url = this.viewLink();
+    function done() {
+      self.setStatus(self.t("linkCopied"));
+    }
+    function manual() {
+      window.prompt(self.t("copyLinkManual"), url);
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(url).then(done, manual);
+    else manual();
   };
 
   // Large networks start reduced (setting startLimit); the status line says so and offers "Show all",
@@ -853,15 +935,64 @@
     this.root.classList.add(CSS + (this.dark ? "-dark" : "-light"));
     this.root.setAttribute("lang", this.i18n.locale);
     this.sidebar = el("aside", { class: CSS + "-sidebar" });
-    this.canvas = el("div", { class: CSS + "-canvas" });
+    this.canvas = el("div", { class: CSS + "-canvas", role: "region", "aria-label": this.t("canvasLabel") });
     // status line: the note on a reduced start view (with "Show all") and the status text
     this.limitBox = el("span", { class: CSS + "-limit", hidden: "" });
-    this.statusText = el("span", { class: CSS + "-status-text" });
+    this.statusText = el("span", { class: CSS + "-status-text", role: "status", "aria-live": "polite" });
     this.statusLine = el("div", { class: CSS + "-status" }, [this.limitBox, this.statusText]);
     this.detail = el("div", { class: CSS + "-detail", hidden: "" });
     this.card = el("div", { class: CSS + "-card", hidden: "" });
+    var self = this;
+    this.sidebar.id = CSS + "-sidebar";
+    this.sideOpenButton = el("button", {
+      type: "button", class: "btn btn-sm btn-secondary " + CSS + "-side-open", "aria-controls": this.sidebar.id, "aria-expanded": "false",
+      onclick: function () { self.setSidebar(true); },
+    }, [svgIcon("filter"), el("span", { text: " " + this.t("filters") })]);
     this.root.appendChild(this.sidebar);
-    this.root.appendChild(el("div", { class: CSS + "-main" }, [this.canvas, this.detail, this.card, this.statusLine]));
+    this.root.appendChild(el("div", { class: CSS + "-main" }, [this.canvas, this.sideOpenButton, this.detail, this.card, this.statusLine]));
+    this.setSidebar(Sidebar.get(this.narrow()), true);
+  };
+
+  // The sidebar can be closed (a "Filters" button over the network opens it again). On narrow screens it
+  // starts closed and opens over the network; the choice is remembered per screen class in this browser.
+  var Sidebar = {
+    key: function (narrow) {
+      return PLUGIN_ID + ":sidebar:" + (narrow ? "narrow" : "wide");
+    },
+    get: function (narrow) {
+      try {
+        var v = localStorage.getItem(this.key(narrow));
+        if (v === "1" || v === "0") return v === "1";
+      } catch (e) {
+        /* no storage */
+      }
+      return !narrow;
+    },
+    set: function (narrow, open) {
+      try {
+        localStorage.setItem(this.key(narrow), open ? "1" : "0");
+      } catch (e) {
+        /* no storage */
+      }
+    },
+  };
+  var NARROW = "(max-width: 767px)";
+  NetworkView.prototype.narrow = function () {
+    return !!(window.matchMedia && window.matchMedia(NARROW).matches);
+  };
+  NetworkView.prototype.setSidebar = function (open, initial) {
+    this.sideOpen = open;
+    this.root.classList.toggle(CSS + "-side-closed", !open);
+    this.sideOpenButton.setAttribute("aria-expanded", open ? "true" : "false");
+    if (this.sideCloseButton) this.sideCloseButton.setAttribute("aria-expanded", open ? "true" : "false");
+    if (initial) return;
+    Sidebar.set(this.narrow(), open);
+    if (open && this.sideCloseButton) this.sideCloseButton.focus();
+    else if (!open) this.sideOpenButton.focus();
+  };
+  // after picking a performer, edge or path in the sidebar: on a narrow screen show the network again
+  NetworkView.prototype.revealNetwork = function () {
+    if (this.sideOpen && this.narrow()) this.setSidebar(false);
   };
 
   NetworkView.prototype.setStatus = function (text, isError) {
@@ -893,7 +1024,7 @@
 
   NetworkView.prototype.buildFilters = function () {
     var self = this, f = this.f, b = this.base, t = this.t.bind(this);
-    var collator = new Intl.Collator(this.i18n.locale);
+    var collator = (this.collator = new Intl.Collator(this.i18n.locale));
     function byName(x, y) {
       return collator.compare(b.studios[x].name, b.studios[y].name);
     }
@@ -919,6 +1050,7 @@
       if (!self.nodes.get(hit)) return (searchMsg.textContent = self.missingText(hit));
       if (pathTo.value.trim()) return runPath();
       self.focusPerformer(hit, true);
+      self.revealNetwork();
     }
     function runPath() {
       searchMsg.textContent = "";
@@ -932,6 +1064,7 @@
       });
       if (searchMsg.textContent) return;
       if (!self.showPath(from, to)) searchMsg.textContent = t("noPath", { from: b.performers[from].name, to: b.performers[to].name });
+      else self.revealNetwork();
     }
     [[search, runSearch], [pathTo, runPath]].forEach(function (pair) {
       pair[0].addEventListener("change", pair[1]);
@@ -1176,14 +1309,32 @@
       el("div", { class: CSS + "-head" }, [
         el("h4", { text: t("title") }),
         el("button", {
+          type: "button", class: "btn btn-sm btn-secondary " + CSS + "-gear", id: CSS + "-copy-link",
+          title: t("copyLink"), "aria-label": t("copyLink"),
+          onclick: function () { self.copyLink(); },
+        }, [svgIcon("copy")]),
+        el("button", {
           type: "button", class: "btn btn-sm btn-secondary " + CSS + "-gear", id: CSS + "-settings-open",
           title: t("settings"), "aria-label": t("settings"), "aria-haspopup": "dialog",
           onclick: function () { self.openSettings(); },
         }, [svgIcon("gear")]),
+        (this.sideCloseButton = el("button", {
+          type: "button", class: "btn btn-sm btn-secondary " + CSS + "-gear " + CSS + "-side-close", id: CSS + "-side-close",
+          title: t("hideFilters"), "aria-label": t("hideFilters"), "aria-controls": this.sidebar.id, "aria-expanded": this.sideOpen ? "true" : "false",
+          text: "\u00d7", onclick: function () { self.setSidebar(false); },
+        })),
       ])
     );
     s.appendChild(el("div", { class: CSS + "-field" }, [el("label", { for: CSS + "-search", text: t("searchLabel") }), search, pathTo, names, searchMsg]));
+    this.rankBox = el("details", { class: CSS + "-field " + CSS + "-rank", id: CSS + "-rank" }, [el("summary", { text: t("rankings") })]);
+    this.rankBox.open = OpenState.get("rank");
+    this.rankBox.addEventListener("toggle", function () {
+      OpenState.set("rank", self.rankBox.open);
+      self.fillRankings();
+    });
+    s.appendChild(this.rankBox);
     s.appendChild(el("div", { class: CSS + "-field" }, [el("label", { for: CSS + "-studio", text: t("studio") }), select]));
+    if (b.years.min != null) s.appendChild(this.yearField());
     s.appendChild(el("div", { class: CSS + "-field" }, [el("label", { for: CSS + "-tag", text: t("tags") }), tagBox, chips, tagMode]));
     this.strengthSlider = slider(CSS + "-min", t("minStrength"), 1, 10, f.minStrength, function (v) { f.minStrength = v; });
     s.appendChild(this.strengthSlider);
@@ -1254,32 +1405,41 @@
       ]), ratedPerformers ? null : t("noRatings"))
     );
     syncPerfPartners();
-    // performer orgasm count: Stash's performer.o_counter (sum over the performer's scenes and images)
-    var perfWithOrgasm = Object.keys(b.performers).filter(function (id) { return b.performers[id].o_counter > 0; }).length;
+    // performer orgasm count: Stash's performer.o_counter (sum over the performer's scenes and images);
+    // null while it is still loading (see loadOrgasms), then the controls are updated (orgasmsArrived)
+    var perfWithOrgasm = b.orgasmsLoaded ? Object.keys(b.performers).filter(function (id) { return b.performers[id].o_counter > 0; }).length : null;
     var perfOrgasmPartners = checkbox(CSS + "-perf-orgasm-partners", t("plusPartners"), f.perfOrgasmPartners, function (v) { f.perfOrgasmPartners = v; });
     function syncPerfOrgasmPartners() {
-      perfOrgasmPartners.querySelector("input").disabled = !f.perfOrgasm || !perfWithOrgasm;
+      perfOrgasmPartners.querySelector("input").disabled = !f.perfOrgasm || perfWithOrgasm === 0;
     }
-    activity.appendChild(
-      disable(el("div", null, [
-        checkbox(CSS + "-perf-orgasm", t("performerOrgasm"), f.perfOrgasm, function (v) { f.perfOrgasm = v; syncPerfOrgasmPartners(); }),
-        el("div", { class: CSS + "-sub" }, [perfOrgasmPartners]),
-      ]), perfWithOrgasm ? null : t("noOrgasmCounts"))
-    );
+    var perfOrgasmBox = el("div", null, [
+      checkbox(CSS + "-perf-orgasm", t("performerOrgasm"), f.perfOrgasm, function (v) { f.perfOrgasm = v; syncPerfOrgasmPartners(); }),
+      el("div", { class: CSS + "-sub" }, [perfOrgasmPartners]),
+    ]);
+    activity.appendChild(disable(perfOrgasmBox, perfWithOrgasm === 0 ? t("noOrgasmCounts") : null));
     syncPerfOrgasmPartners();
-    activity.appendChild(
-      disable(el("div", null, [
-        el("span", { class: CSS + "-label", text: t("sizeBy") }),
-        el("div", { class: CSS + "-sub" }, [
-          radio(CSS + "-sizeby", CSS + "-size-scenes", t("sizeScenes"), f.sizeBy === "scenes", function () { f.sizeBy = "scenes"; self.draw(); }),
-          radio(CSS + "-sizeby", CSS + "-size-orgasms", t("sizeOrgasm"), f.sizeBy === "orgasms", function () { f.sizeBy = "orgasms"; self.draw(); }),
-        ]),
-      ]), perfWithOrgasm ? null : t("noOrgasmCounts"))
-    );
+    var sizeBox = el("div", null, [
+      el("span", { class: CSS + "-label", text: t("sizeBy") }),
+      el("div", { class: CSS + "-sub" }, [
+        radio(CSS + "-sizeby", CSS + "-size-scenes", t("sizeScenes"), f.sizeBy === "scenes", function () { f.sizeBy = "scenes"; self.draw(); }),
+        radio(CSS + "-sizeby", CSS + "-size-orgasms", t("sizeOrgasm"), f.sizeBy === "orgasms", function () { f.sizeBy = "orgasms"; self.draw(); }),
+      ]),
+    ]);
+    activity.appendChild(disable(sizeBox, perfWithOrgasm === 0 ? t("noOrgasmCounts") : null));
     activity.appendChild(disable(el("div", null, [checkbox(CSS + "-edge-orgasm", t("edgeByOrgasm"), f.edgeByOrgasm, function (v) { f.edgeByOrgasm = v; })]), withOrgasm ? null : t("noOrgasmCounts")));
-    activity.appendChild(
-      el("div", { class: CSS + "-hint", text: t("activityCounts", { rated: ratedScenes, watched: watched, orgasm: withOrgasm, performers: ratedPerformers, perfOrgasm: perfWithOrgasm }) })
-    );
+    var activityHint = el("div", { class: CSS + "-hint" });
+    function activityText(perfOrgasm) {
+      activityHint.textContent = t("activityCounts", { rated: ratedScenes, watched: watched, orgasm: withOrgasm, performers: ratedPerformers, perfOrgasm: perfOrgasm == null ? "\u2026" : perfOrgasm });
+    }
+    activityText(perfWithOrgasm);
+    activity.appendChild(activityHint);
+    // once the performers' orgasm counts are there: the count in the hint, and controls off if there are none
+    this.orgasmsArrived = function () {
+      perfWithOrgasm = Object.keys(b.performers).filter(function (id) { return b.performers[id].o_counter > 0; }).length;
+      activityText(perfWithOrgasm);
+      if (!perfWithOrgasm) [perfOrgasmBox, sizeBox].forEach(function (n) { disable(n, t("noOrgasmCounts")); });
+      syncPerfOrgasmPartners();
+    };
     s.appendChild(activity);
     s.appendChild(el("div", { class: CSS + "-field" }, [checkbox(CSS + "-isolated", t("showIsolated"), f.showIsolated, function (v) { f.showIsolated = v; })]));
     var legend = el("fieldset", { class: CSS + "-field " + CSS + "-legend" }, [el("legend", { text: t("gender") })]);
@@ -1345,6 +1505,21 @@
     this.showSummary();
     this.ready = true;
     this.root.setAttribute("data-ready", "1");
+    var iv = this.initialView;
+    this.initialView = null;
+    if (!iv) return;
+    var ids = iv.path || iv.edge || [iv.focus];
+    var missing = ids.filter(function (id) {
+      return !this.nodes.get(id);
+    }, this)[0];
+    if (missing != null) return this.setStatus(this.missingText(missing));
+    if (iv.path) {
+      if (!this.showPath(iv.path[0], iv.path[1])) this.showNoPath(iv.path[0], iv.path[1]);
+    } else if (iv.edge) {
+      var b = this.base.performers, id = pairKey(iv.edge[0], iv.edge[1]);
+      if (this.edgeIndex[id]) this.focusEdge(id);
+      else this.setStatus(this.t("noEdge", { from: b[iv.edge[0]].name, to: b[iv.edge[1]].name }));
+    } else this.focusPerformer(iv.focus, true);
   };
 
   // Large networks are laid out in a Web Worker (Core.runLayout, the same force model as vis-network's
@@ -1551,6 +1726,14 @@
 
   NetworkView.prototype.draw = function () {
     var self = this, vis = window.vis;
+    // node size by orgasm count and the performer orgasm filter need the counts: load them first
+    if ((this.f.sizeBy === "orgasms" || this.f.perfOrgasm) && !this.base.orgasmsLoaded) {
+      this.setStatus(this.t("loadingOrgasms"));
+      this.loadOrgasms().then(function () {
+        if (!self.destroyed) self.draw();
+      });
+      return;
+    }
     this.layoutStart = performance.now();
     this.ready = false;
     this.root.removeAttribute("data-ready");
@@ -1623,13 +1806,18 @@
       this.network.setOptions(options);
       this.network.setData({ nodes: this.nodes, edges: this.edges });
     }
-    if (inWorker && !this.layoutInWorker()) {
+    // nothing to lay out (every performer filtered out): vis-network never reports a finished layout
+    if (!this.graph.nodes.length)
+      setTimeout(function () {
+        if (!self.destroyed && self.drawId === drawId) self.layoutFinished();
+      }, 0);
+    else if (inWorker && !this.layoutInWorker()) {
       this.network.setOptions({ physics: { enabled: true } });
       this.network.stabilize(P.iterations);
     }
     this.setStatus(
       [this.t("statusPeople", { count: this.graph.nodes.length }), this.t("statusEdges", { count: this.graph.edges.length }), this.t("layouting")].join(" · ")
-    );
+    );    this.fillRankings();
   };
 
   // Node radius as vis-network derives it from "value" with the default linear scaling (used for the hearts).
@@ -1667,6 +1855,7 @@
       t("statusEdges", { count: g.edges.length }),
       t("statusScenes", { scenes: g.sceneCount, units: g.unitCount }),
     ];
+    if (!g.nodes.length) parts.unshift(t("emptyNetwork"));
     if (g.tooBig) parts.push(t(g.countBy === "productions" ? "statusTooBig" : "statusTooBigScenes", { count: g.tooBig, max: this.f.maxCast }));
     parts.push(t(g.countBy === "productions" ? "statusCountProductions" : "statusCountScenes"));
     parts.push(t("statusTiming", { data: tm.data, layout: tm.layout }));
@@ -1723,6 +1912,8 @@
             self.pathStart = pid;
             self.showNodeDetail(pid);
           }
+        } else if (self.pathFrom && self.pathFrom !== pid) {
+          self.pathTo(pid);
         } else if (self.mode && self.mode.kind === "focus" && self.mode.pid === pid) {
           self.clearMode();
         } else {
@@ -1816,9 +2007,91 @@
   NetworkView.prototype.clearMode = function () {
     this.mode = null;
     this.pathStart = null;
+    this.pathFrom = null;
     if (this.network) this.network.unselectAll();
     if (this.nodes) this.emphasize(null);
     this.closeDetail();
+  };
+
+  // -- years: from / to, from the years that occur in the library; a range leaves out undated scenes
+  NetworkView.prototype.yearField = function () {
+    var self = this, f = this.f, y = this.base.years, t = this.t.bind(this);
+    var hint = el("div", { class: CSS + "-hint", id: CSS + "-years-hint" });
+    function sync() {
+      hint.textContent = (f.yearFrom || f.yearTo) && y.undated ? t("yearsUndated", { count: y.undated }) : "";
+    }
+    function yearSelect(id, value, label, set) {
+      var sel = el("select", { class: "form-control form-control-sm " + CSS + "-year", id: id, "aria-label": label });
+      sel.appendChild(el("option", { value: 0, text: t("yearAny") }));
+      for (var n = y.max; n >= y.min; n--) sel.appendChild(el("option", { value: n, text: String(n) }));
+      sel.value = String(value && value >= y.min && value <= y.max ? value : 0);
+      sel.addEventListener("change", function () {
+        set(Number(sel.value));
+        sync();
+        self.draw();
+      });
+      return sel;
+    }
+    var from = yearSelect(CSS + "-year-from", f.yearFrom, t("yearFrom"), function (v) { f.yearFrom = v; });
+    var to = yearSelect(CSS + "-year-to", f.yearTo, t("yearTo"), function (v) { f.yearTo = v; });
+    sync();
+    return el("div", { class: CSS + "-field" }, [
+      el("label", { for: CSS + "-year-from", text: t("years") }),
+      el("div", { class: CSS + "-row " + CSS + "-years" }, [from, el("span", { text: t("yearRangeTo") }), to]),
+      hint,
+    ]);
+  };
+
+  // "together from ... to ..." for the scenes of an edge
+  NetworkView.prototype.spanText = function (scenes) {
+    var span = Core.dateSpan(scenes), i = this.i18n;
+    if (!span) return null;
+    return span.first === span.last ? this.t("togetherOn", { date: i.date(span.first) }) : this.t("togetherSpan", { first: i.date(span.first), last: i.date(span.last) });
+  };
+
+  // Rankings in the sidebar (Core.rankings over the shown network), rebuilt after every draw while open.
+  var RANK_LIMIT = 10;
+  NetworkView.prototype.fillRankings = function () {
+    var self = this, box = this.rankBox, b = this.base.performers, t = this.t.bind(this);
+    if (!box || !box.open || !this.graph) return;
+    while (box.children.length > 1) box.removeChild(box.lastChild);
+    var r = Core.rankings(this.graph, b, RANK_LIMIT, this.collator.compare);
+    function item(content, count, onClick) {
+      return el("li", null, [
+        el("button", { type: "button", class: CSS + "-rank-item", title: content.join("") + ": " + count, onclick: onClick }, [
+          el("span", { class: CSS + "-rank-name" }, content),
+          el("span", { class: CSS + "-rank-count", text: count }),
+        ]),
+      ]);
+    }
+    var pairs = el("ol", { class: CSS + "-rank-list" });
+    r.pairs.forEach(function (p) {
+      pairs.appendChild(item([b[p.from].name, " & ", b[p.to].name], self.weightLabel(p.weight), function () { self.focusEdge(p.id); self.revealNetwork(); }));
+    });
+    var partners = el("ol", { class: CSS + "-rank-list" });
+    r.partners.forEach(function (p) {
+      partners.appendChild(item([b[p.id].name], t("partners", { count: p.count }), function () { self.focusPerformer(p.id, true); self.revealNetwork(); }));
+    });
+    if (!r.pairs.length) return box.appendChild(el("div", { class: CSS + "-hint", text: t("rankEmpty") }));
+    box.appendChild(el("div", { class: CSS + "-rank-head", text: t("rankPairs") }));
+    box.appendChild(pairs);
+    box.appendChild(el("div", { class: CSS + "-rank-head", text: t("rankPartners") }));
+    box.appendChild(partners);
+  };
+
+  // An edge as if it had been clicked, plus emphasis on the pair and a zoom to both performers.
+  NetworkView.prototype.focusEdge = function (edgeId) {
+    var e = this.edgeIndex[edgeId];
+    if (!e) return;
+    this.clearMode();
+    var nodes = {}, accent = {};
+    nodes[e.from] = nodes[e.to] = true;
+    accent[edgeId] = true;
+    this.mode = { kind: "edge", id: edgeId };
+    this.network.selectEdges([edgeId]);
+    this.emphasize({ nodes: nodes, edges: {}, accent: accent, color: HIGHLIGHT });
+    this.network.fit({ nodes: [e.from, e.to], animation: { duration: 600, easingFunction: "easeInOutQuad" } });
+    this.showEdgeDetail(edgeId);
   };
 
   NetworkView.prototype.focusPerformer = function (pid, centre) {
@@ -1839,12 +2112,20 @@
       if (i) accent[pairKey(path[i - 1], id)] = true;
     });
     this.pathStart = null;
+    this.pathFrom = null;
     this.mode = { kind: "path", nodes: path };
     this.network.selectNodes(path, false);
     this.emphasize({ nodes: nodes, edges: edges, accent: accent, color: PATH_COLOR });
     this.network.fit({ nodes: path, animation: { duration: 600, easingFunction: "easeInOutQuad" } });
     this.showPathDetail(path);
     return true;
+  };
+
+  // "Path from here" / "Path to here" in the person detail: the way to a path without Ctrl/Cmd (touch).
+  NetworkView.prototype.pathTo = function (pid) {
+    var from = this.pathFrom;
+    this.pathFrom = null;
+    if (!this.showPath(from, pid)) this.showNoPath(from, pid);
   };
 
   NetworkView.prototype.showNoPath = function (from, to) {
@@ -2004,7 +2285,7 @@
       var sc = it.scene, u = it.unit;
       var groupLink = u && u.kind === "group" ? el("div", { class: CSS + "-tile-group" }, [self.link("/groups/" + u.id, u.name)]) : null;
       if (groupLink) groupLink.firstChild.setAttribute("title", t("group") + ": " + u.name);
-      grid.appendChild(self.tile("/scenes/" + sc.id, sc.screenshot, sc.title, self.i18n.date(sc.date), "scene", groupLink));
+      grid.appendChild(self.tile("/scenes/" + sc.id, sc.screenshot, sc.title || t("untitledScene", { id: sc.id }), self.i18n.date(sc.date), "scene", groupLink));
       sc.galleries.forEach(function (g) {
         if (seen[g.id]) return;
         seen[g.id] = true;
@@ -2031,12 +2312,29 @@
     return this.edgeIndex[pairKey(a, b)];
   };
 
+  // A button that navigates inside Stash; Ctrl/Cmd or middle click keep the browser's own behaviour.
+  NetworkView.prototype.navButton = function (path, text, cls) {
+    var self = this;
+    return el("a", {
+      class: "btn btn-sm " + cls,
+      href: path,
+      text: text,
+      onclick: function (ev) {
+        if (ev.ctrlKey || ev.metaKey || ev.button !== 0) return;
+        ev.preventDefault();
+        self.history.push(path);
+      },
+    });
+  };
+
   NetworkView.prototype.showEdgeDetail = function (edgeId) {
     var e = this.edgeIndex[edgeId];
     if (!e) return;
     var a = this.base.performers[e.from], b = this.base.performers[e.to];
     this.openDetail(el("strong", null, [this.link("/performers/" + a.id, a.name), " & ", this.link("/performers/" + b.id, b.name)]), [
       el("div", { class: CSS + "-hint", text: this.sharedSummary(e) }),
+      this.spanText(e.scenes) ? el("div", { class: CSS + "-hint " + CSS + "-span", text: this.spanText(e.scenes) }) : null,
+      el("div", { class: CSS + "-actions" }, [this.navButton(Core.scenesUrl([a, b]), this.t("openScenesBoth"), "btn-secondary")]),
       this.unitList(e, edgeId),
     ]);
   };
@@ -2047,7 +2345,7 @@
     var nb = this.graph.neighbours[pid] || {};
     var n = this.graph.scenesPerPerformer[pid] || 0;
     var partners = Object.keys(nb).sort(function (x, y) {
-      return nb[y] - nb[x] || self.base.performers[x].name.localeCompare(self.base.performers[y].name);
+      return nb[y] - nb[x] || self.collator.compare(self.base.performers[x].name, self.base.performers[y].name);
     });
     var list = el("ul", { class: CSS + "-partners" });
     partners.forEach(function (id) {
@@ -2074,17 +2372,16 @@
     this.openDetail(el("strong", null, [p.name, favIcon(p, t)]), [
       el("div", { class: CSS + "-hint", text: t("scenesInSelection", { count: n, total: p.scene_count }) + " · " + t("partners", { count: partners.length }) + (p.o_counter ? " · " + t("orgasmCount", { count: p.o_counter }) : "") }),
       this.pathStart === pid ? el("div", { class: CSS + "-hint " + CSS + "-pathhint", text: t("pathStartHint", { name: p.name }) }) : null,
+      this.pathFrom === pid ? el("div", { class: CSS + "-hint " + CSS + "-pathhint", text: t("pathFromHint", { name: p.name }) }) : null,
       el("div", { class: CSS + "-actions" }, [
-        el("a", {
-          class: "btn btn-sm btn-primary",
-          href: "/performers/" + pid,
-          text: t("openPage"),
-          onclick: function (ev) {
-            if (ev.ctrlKey || ev.metaKey || ev.button !== 0) return;
-            ev.preventDefault();
-            self.history.push("/performers/" + pid);
-          },
-        }),
+        this.navButton("/performers/" + pid, t("openPage"), "btn-primary"),
+        this.navButton(Core.scenesUrl([{ id: pid, name: p.name }]), t("openScenesOne"), "btn-secondary"),
+        this.pathFrom && this.pathFrom !== pid
+          ? el("button", { type: "button", class: "btn btn-sm btn-secondary", text: t("pathToHere", { name: this.base.performers[this.pathFrom].name }), onclick: function () { self.pathTo(pid); } })
+          : el("button", { type: "button", class: "btn btn-sm btn-secondary", text: t("pathFromHere"), "aria-pressed": this.pathFrom === pid ? "true" : "false", onclick: function () {
+            self.pathFrom = self.pathFrom === pid ? null : pid;
+            self.showNodeDetail(pid);
+          } }),
       ]),
       partners.length ? el("div", { class: CSS + "-subhead", text: t("partnersHeading") }) : null,
       partners.length ? list : null,
@@ -2163,6 +2460,7 @@
         el("div", { text: t("partners", { count: Object.keys(nb).length }) }),
         p.o_counter ? el("div", { text: t("orgasmCount", { count: p.o_counter }) }) : null,
         el("div", { class: CSS + "-card-shared", text: t("sharedWith", { name: b[selected].name, label: this.weightLabel(nb[selected] || 0) }) }),
+        this.edgeIndex[pairKey(id, selected)] ? el("div", { class: CSS + "-card-span", text: this.spanText(this.edgeIndex[pairKey(id, selected)].scenes) }) : null,
       ])
     );
     this.card.hidden = false;
@@ -2896,9 +3194,38 @@
 
   if (Nav && Button && RRD && RRD.Link && RRD.useRouteMatch && PluginApi.patch && PluginApi.patch.before) {
     PluginApi.patch.before("MainNavBar.MenuItems", function () {
-      return Core.withNavChild(arguments, h(SafeNavItem, { key: PLUGIN_ID }), React.Children.toArray);
+      return Core.withChild(arguments, h(SafeNavItem, { key: PLUGIN_ID }), React.Children.toArray);
     });
   } else {
     console.warn(PLUGIN_ID + ": navbar entry not added, a library is missing; the page is at " + ROUTE);
+  }
+
+  // "Show in network" on the performer page, as the last item of the details panel (Stash passes the
+  // panel's props, with performer, on to its DetailGroup).
+  function PerformerButton(props) {
+    var i18n = useI18n();
+    var id = props.performer && props.performer.id;
+    if (!i18n || id == null) return null;
+    return h(
+      "div",
+      { className: "detail-item " + CSS + "-performer-link" },
+      h(
+        RRD.Link,
+        { to: ROUTE + "?focus=" + encodeURIComponent(id), className: "btn btn-sm btn-secondary" },
+        FontAwesomeIcon && icon ? h(FontAwesomeIcon, { icon: icon, className: "fa-icon mr-1" }) : null,
+        h("span", null, i18n.t("showInNetwork"))
+      )
+    );
+  }
+  var SafePerformerButton = guarded(PerformerButton, function () {
+    return null;
+  });
+
+  if (RRD && RRD.Link && PluginApi.patch && PluginApi.patch.before) {
+    PluginApi.patch.before("PerformerDetailsPanel.DetailGroup", function () {
+      var props = arguments[0];
+      if (!props || !props.performer) return Array.prototype.slice.call(arguments);
+      return Core.withChild(arguments, h(SafePerformerButton, { key: PLUGIN_ID, performer: props.performer }), React.Children.toArray);
+    });
   }
 })();

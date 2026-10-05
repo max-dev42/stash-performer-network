@@ -15,28 +15,43 @@ jobs:
         with:
           persist-credentials: false
 
+      # vX.Y.Z is a release, vX.Y.Z-beta.N (anything after a "-") a pre-release of the beta channel; the
+      # manifest carries the same version, e.g. version: 0.3.0-beta.1 for the tag v0.3.0-beta.1
       - name: Version from tag and manifest
         id: version
         run: |
           version="${GITHUB_REF_NAME#v}"
-          manifest=$(sed -n 's/^version:[[:space:]]*//p' plugin/stash-performer-network.yml)
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'; then
+            echo "::error::Tag $GITHUB_REF_NAME is not vX.Y.Z or vX.Y.Z-beta.N"
+            exit 1
+          fi
+          manifest=$(sed -n 's/^version:[[:space:]]*//p' plugin/stash-performer-network.yml | sed -e 's/[[:space:]]*#.*$//' -e 's/^["'"'"']//' -e 's/["'"'"'][[:space:]]*$//' -e 's/[[:space:]]*$//')
           if [ "$version" != "$manifest" ]; then
             echo "::error::Tag $GITHUB_REF_NAME does not match version $manifest in plugin/stash-performer-network.yml"
             exit 1
           fi
+          case "$version" in *-*) prerelease=true ;; *) prerelease=false ;; esac
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
 
+      # the section of the version; for a beta without one of its own, that of the coming version
+      # (0.3.0 for 0.3.0-beta.1), else "Unreleased"
       - name: Release notes from CHANGELOG.md
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          awk -v v="$VERSION" '
-            /^## / { if (found) exit; found = ($2 == v || $2 == "[" v "]"); next }
-            found { print }
-          ' CHANGELOG.md | sed -e '/./,$!d' > notes.md
-          if ! grep -q '[^[:space:]]' notes.md; then
-            echo "::error::No section for $VERSION in CHANGELOG.md"
-            exit 1
+          section() {
+            awk -v v="$1" '
+              /^## / { if (found) exit; found = ($2 == v || $2 == "[" v "]"); next }
+              found { print }
+            ' CHANGELOG.md | sed -e '/./,$!d' > notes.md
+            grep -q '[^[:space:]]' notes.md
+          }
+          if ! section "$VERSION"; then
+            case "$VERSION" in
+              *-*) section "${VERSION%%-*}" || section "Unreleased" ;;
+              *) false ;;
+            esac || { echo "::error::No section for $VERSION in CHANGELOG.md"; exit 1; }
           fi
           cat notes.md
 
@@ -53,7 +68,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.version.outputs.version }}
+          PRERELEASE: ${{ steps.version.outputs.prerelease }}
         run: |
           zip_name="stash-performer-network-$VERSION.zip"
+          pre=""
+          if [ "$PRERELEASE" = "true" ]; then pre="--prerelease"; fi
           gh release create "$GITHUB_REF_NAME" "$zip_name" "$zip_name.sha256" \
-            --verify-tag --title "$VERSION" --notes-file notes.md
+            --verify-tag --title "$VERSION" --notes-file notes.md $pre

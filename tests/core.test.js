@@ -410,24 +410,119 @@ test("face data of the earlier detector version: faces stand, no face is checked
   assert.equal(C.faceStillValid(null, 600, 800), false);
 });
 
-test("withNavChild appends the navbar entry and keeps all other arguments", () => {
+test("withChild appends the child and keeps all other arguments", () => {
   const toArray = (c) => (c == null ? [] : [].concat(c));
   const props = { children: ["a", "b"], other: 1 };
   const ctx = {};
-  const [p, second] = C.withNavChild([props, ctx], "item", toArray);
+  const [p, second] = C.withChild([props, ctx], "item", toArray);
   assert.deepEqual(p, { children: ["a", "b", "item"], other: 1 });
   assert.equal(second, ctx);
   assert.deepEqual(props.children, ["a", "b"]); // the original props are not changed
-  assert.deepEqual(C.withNavChild([{}], "item", toArray)[0].children, ["item"]);
+  assert.deepEqual(C.withChild([{}], "item", toArray)[0].children, ["item"]);
 });
 
-test("withNavChild returns the original arguments when something is off", () => {
+test("withChild returns the original arguments when something is off", () => {
   const boom = () => {
     throw new Error("boom");
   };
   const props = { children: ["a"] };
-  assert.deepEqual(C.withNavChild([props], "item", boom), [props]);
-  assert.deepEqual(C.withNavChild([null], "item", (c) => c), [null]);
-  assert.deepEqual(C.withNavChild([], "item", (c) => c), []);
-  assert.deepEqual(C.withNavChild(undefined, "item", (c) => c), []);
+  assert.deepEqual(C.withChild([props], "item", boom), [props]);
+  assert.deepEqual(C.withChild([null], "item", (c) => c), [null]);
+  assert.deepEqual(C.withChild([], "item", (c) => c), []);
+  assert.deepEqual(C.withChild(undefined, "item", (c) => c), []);
+});
+
+test("readView and writeView: the copied link opens the same view", () => {
+  const b = base();
+  const st = C.readSettings({}, {});
+  const q = (s) => new URLSearchParams(s);
+  const studio = Object.keys(b.studios)[0], tag = Object.keys(b.tags)[0];
+  const [a, z] = Object.keys(b.performers);
+  const v = C.readView(q(""), st, b);
+  Object.assign(v, { countBy: "productions", maxCast: 5, favOn: true, favMode: "only", minStrength: 3, studio, tags: [tag], tagMode: "all", sceneStars: 2, watchedOnly: true, yearFrom: 2020, yearTo: 2024 });
+  v.genders[b.genders[0]] = false;
+  const link = C.writeView(v, st, b, { focus: a });
+  const back = C.readView(q(link), st, b);
+  for (const k of ["countBy", "maxCast", "favOn", "favMode", "minStrength", "studio", "tags", "tagMode", "sceneStars", "watchedOnly", "genders", "yearFrom", "yearTo"]) assert.deepEqual(back[k], v[k], k);
+  assert.equal(back.focus, a);
+  assert.deepEqual(C.readView(q(C.writeView(v, st, b, { path: [a, z], focus: a })), st, b).path, [a, z]);
+  const e = C.readView(q(C.writeView(v, st, b, { edge: [a, z], focus: a })), st, b);
+  assert.deepEqual([e.edge, e.focus], [[a, z], null]);
+});
+
+test("writeView leaves out what the page opens with anyway; readView ignores unknown ids", () => {
+  const b = base();
+  const st = C.readSettings({}, {});
+  const v = C.readView(new URLSearchParams(""), st, b);
+  v.countBy = "scenes";
+  assert.equal(C.writeView(v, st, b), "count=scenes");
+  const bad = C.readView(new URLSearchParams("focus=999999&path=1,1&studio=999999&genders=NOPE"), st, b);
+  assert.equal(bad.focus, null);
+  assert.equal(bad.path, null);
+  assert.equal(bad.studio, "");
+  assert.ok(Object.values(bad.genders).every((on) => !on));
+});
+
+test("rankings: strongest pairs and most partners, ties by name", () => {
+  const performers = { 1: { name: "Cleo" }, 2: { name: "Abe" }, 3: { name: "Bo" }, 4: { name: "Dee" } };
+  const graph = {
+    nodes: ["1", "2", "3", "4"],
+    edges: [
+      { from: "1", to: "2", weight: 2 },
+      { from: "2", to: "3", weight: 5 },
+      { from: "1", to: "3", weight: 2 },
+    ],
+    neighbours: { 1: { 2: 2, 3: 2 }, 2: { 1: 2, 3: 5 }, 3: { 2: 5, 1: 2 }, 4: {} },
+  };
+  const r = C.rankings(graph, performers, 2, (a, b) => a.localeCompare(b));
+  assert.deepEqual(r.pairs.map((p) => p.id), ["2-3", "1-2"]); // 1-2 and 1-3 tie: Cleo & Abe before Cleo & Bo
+  assert.deepEqual(r.partners.map((p) => p.id), ["2", "3"]); // all have 2 partners: Abe, Bo, Cleo; Dee (0) is left out
+  assert.equal(C.rankings(graph, performers, 10, (a, b) => a.localeCompare(b)).partners.length, 3);
+});
+
+test("scenesUrl: Stash's criterion format, braces only outside strings", () => {
+  const url = C.scenesUrl([{ id: 1, name: "Ann {the} \"Best\"" }, { id: "2", name: "Bo" }]);
+  assert.ok(url.startsWith("/scenes?c="));
+  const c = decodeURIComponent(url.slice("/scenes?c=".length));
+  assert.equal(c, '("type":"performers","modifier":"INCLUDES_ALL","value":("items":[("id":"1","label":"Ann {the} \\"Best\\""),("id":"2","label":"Bo")],"excluded":[]))');
+  assert.match(decodeURIComponent(C.scenesUrl([{ id: 3, name: "Cy" }])), /"modifier":"INCLUDES"/);
+});
+
+test("years: scene dates, the year range filter and the first and last date of a pair", () => {
+  const data = fx.data();
+  data.findScenes.scenes[0].date = "2019-05-01";
+  data.findScenes.scenes[1].date = null;
+  const b = C.prepareData(data);
+  assert.equal(b.scenes[0].year, 2019);
+  assert.equal(b.years.undated, 1);
+  assert.equal(b.years.min, 2019);
+  const all = C.selectScenes(b, fx.filters({})).length;
+  const from2020 = C.selectScenes(b, fx.filters({ yearFrom: 2020 }));
+  assert.equal(from2020.length, all - 2); // the 2019 scene and the undated one are left out
+  assert.ok(from2020.every((sc) => sc.year >= 2020));
+  assert.equal(C.selectScenes(b, fx.filters({ yearTo: 2019 })).length, 1);
+  assert.deepEqual(C.dateSpan([{ date: "2021-03-02" }, { date: null }, { date: "2019-01-01" }, { date: "2024-12-31" }]), { first: "2019-01-01", last: "2024-12-31" });
+  assert.equal(C.dateSpan([{ date: null }]), null);
+});
+
+test("scene_count from the scenes when Stash does not send it; orgasm counts attached later", () => {
+  const data = fx.data();
+  const seen = new Map();
+  for (const sc of data.findScenes.scenes)
+    for (const p of sc.performers) {
+      const copy = { ...p };
+      delete copy.scene_count;
+      delete copy.o_counter;
+      seen.set(p.id, copy);
+    }
+  data.findPerformers = { performers: [...seen.values()] };
+  data.findScenes.scenes = data.findScenes.scenes.map((sc) => ({ ...sc, performers: sc.performers.map((p) => ({ id: p.id })) }));
+  const b = C.prepareData(data);
+  const id = b.scenes[0].performers[0];
+  assert.equal(b.performers[id].scene_count, b.scenes.filter((sc) => sc.performers.includes(id)).length);
+  assert.equal(b.orgasmsLoaded, false);
+  C.attachOrgasms(b, [{ id, o_counter: 4 }]);
+  assert.equal(b.orgasmsLoaded, true);
+  assert.equal(b.performers[id].o_counter, 4);
+  assert.equal(C.prepareData(fx.data()).orgasmsLoaded, true); // data that already has them
 });

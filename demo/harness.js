@@ -9,12 +9,13 @@
   window.PluginApi = {
     React: {
       createElement: function () { return null; },
+      Component: function () {},
       useRef: function () { return { current: null }; },
       useState: function (v) { return [v, noop]; },
       useEffect: noop,
       Children: { toArray: function (c) { return [].concat(c || []); } },
     },
-    libraries: { ReactRouterDOM: {}, Bootstrap: { Nav: {}, Button: {} }, Intl: {}, FontAwesomeSolid: {} },
+    libraries: { ReactRouterDOM: { Link: noop, useRouteMatch: noop }, Bootstrap: { Nav: {}, Button: {} }, Intl: {}, FontAwesomeSolid: {} },
     components: {},
     register: { route: noop },
     patch: { before: noop },

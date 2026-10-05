@@ -10,14 +10,14 @@ Stash under Settings → Plugins → Performer Network.
 |---|---|---|---|
 | Faces | Store face positions on performers ([faces.md](faces.md)) | `storeFaces`, boolean: `true` = store | `false` (see [faces.md](faces.md#default)) |
 | Faces | Use face crops | `disableFaceCrops`, boolean: `true` = face crops **off** (crop as in `fallbackCrop`, MediaPipe not loaded, nothing stored) | `false` (face crops on) |
-| Faces | Without a face ([faces.md](faces.md#without-a-face)) | `fallbackCrop`, string: `auto`, `top`, `upperThird` or `center` | `auto` |
-| Display | Node size by | `nodeSizeBy`, string: `scenes` or `orgasms` | `scenes` |
-| Display | Names from zoom level (on-screen label size in px, 0 = always) | `labelZoom`, number 0 to 24 | `8` |
+| Faces | Crop without a face ([faces.md](faces.md#crop-without-a-face)) | `fallbackCrop`, string: `auto`, `top`, `upperThird` or `center` | `auto` |
+| Display | Minimum name size on screen (px; 0 = always) | `labelZoom`, number 0 to 24 | `8` |
 | Display | Large networks start with at most this many performers (see below) | `startLimit`, number 50 to 10000 (0 = default) | `400` |
 | Display | Colours per gender (colour picker, reset) | `genderColors`, JSON string, e.g. `{"FEMALE": "#e0559a"}` | built-in colours |
 | Defaults | Count edge strength by | `defaultCountBy`, string: `scenes` or `productions` | `scenes` |
 | Defaults | Max. performers per scene / production | `defaultMaxCast`, number 2 to 40 (0 = default) | `12` |
 | Defaults | Favorites filter mode | `defaultFavMode`, string: `partners` or `only` | `partners` |
+| Defaults | Node size by | `nodeSizeBy`, string: `scenes` or `orgasms` | `scenes` |
 | Defaults | Filters when the page opens ("Use current filters") | `defaultFilters`, JSON string with `studio`, `tags`, `tagMode`, `sceneStars`, `perfStars`, `watchedOnly`, `orgasmOnly` | none |
 
 Why `disableFaceCrops` and not `useFaceCrops`: Stash shows a boolean that was never saved as off, so a
@@ -58,7 +58,9 @@ view says so. Paths are searched within the shown network.
 ## URL parameters
 
 Defaults apply when the page is opened. URL parameters override them for that view, e.g.
-`/performer-network?count=productions&studio=3`.
+`/performer-network?count=productions&studio=3`. The copy button next to the gear ("Copy link to this
+view") puts the current view into a link: the filters that differ from the defaults, the counting, and
+the highlighted performer, edge or path.
 
 | Parameter | Values |
 |---|---|
@@ -73,3 +75,10 @@ Defaults apply when the page is opened. URL parameters override them for that vi
 | `watched` | `1` = only watched scenes |
 | `orgasms` | `1` = only scenes with an orgasm count (`o=1` is still accepted) |
 | `all` | `1` = no reduced start view, every performer of the selection (as after "Show all") |
+| `fav` | `1` = favorites filter on (mode from `favMode`) |
+| `min` | minimum edge strength, 1 to 10 |
+| `genders` | genders to show, comma-separated (`FEMALE,MALE`); absent = all |
+| `focus` | performer id: highlighted with their network once the layout is done |
+| `path` | two performer ids, comma-separated: the shortest path between them |
+| `edge` | two performer ids, comma-separated: their shared edge, as if clicked |
+| `from`, `to` | years: scenes from / up to this year (absent = open end; leaves out scenes without a date) |

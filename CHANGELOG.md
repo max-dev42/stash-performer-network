@@ -2,6 +2,28 @@
 
 All notable changes are listed here. Versions follow [Semantic Versioning](https://semver.org/).
 
+## 0.2.0 (links, rankings, phones and years)
+
+- Every view has a link: the copy button next to the gear puts the filters, the counting and the
+  highlighted performer, edge or path into a URL. New URL parameters `focus`, `edge`, `path`, `fav`, `min`,
+  `genders`, `from` and `to` ([settings.md](docs/settings.md#url-parameters)).
+- "Show in network" on Stash's performer page opens the network with that performer highlighted.
+- Rankings in the sidebar: the strongest pairs and the performers with the most partners in the shown
+  network; a click opens the pair or the performer.
+- From the network to Stash: "Their scenes together in Stash" on an edge, "Scenes in Stash" on a performer
+  (Stash's scene list with a performer filter).
+- Years: a from / to filter from the scene dates in the library, and "Together from ... to ..." on edges and
+  partner cards.
+- Phones and touch screens: the sidebar can be closed and opens over the network on narrow screens, the
+  network fills the screen, the detail panel sits at the bottom, and "Path from here" finds a path
+  without Ctrl/Cmd-click.
+- Large libraries: scenes load in pages with progress in the status line, and the data for 19,500 scenes
+  arrives in about 1.0 s instead of 1.3 to 1.5 s.
+- When no performer matches the filters, the page says so instead of staying at "laying out".
+- Clearer names and texts: "Crop without a face", "Minimum name size on screen (px)", the node size
+  default under Defaults (stored settings stay as they are), real plural forms in all five languages.
+- Screen readers: the network area is a labelled region and the status line is announced.
+
 ## 0.1.2 (no more black screen)
 
 - An error in the plugin, or another plugin clashing with it, no longer leaves the whole Stash UI black

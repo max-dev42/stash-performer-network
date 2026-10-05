@@ -2,7 +2,7 @@ name: Performer Network
 description: >-
   Network page of who performed with whom; the more collaborations, the thicker the edge.
   Adds a "Network" entry to the navbar. All libraries are bundled locally (no CDN).
-version: 0.1.2
+version: 0.2.0
 ui:
   # Only this small entry script runs on every Stash page; vis-network and MediaPipe are
   # loaded lazily from the asset path below when the network page is opened.
@@ -37,12 +37,8 @@ settings:
       (default; top for images more than 1.5 times as high as wide, else upper third), top, upperThird or
       center.
     type: STRING
-  nodeSizeBy:
-    displayName: Node size by
-    description: "scenes (default) or orgasms (orgasm count; the earlier value o is still read)."
-    type: STRING
   labelZoom:
-    displayName: Names from zoom level
+    displayName: Minimum name size on screen (px)
     description: Names are drawn once their on-screen size reaches this many pixels (0-24, default 8).
     type: NUMBER
   genderColors:
@@ -67,6 +63,10 @@ settings:
   defaultFavMode:
     displayName: Default favorites filter mode
     description: "partners (default) or only."
+    type: STRING
+  nodeSizeBy:
+    displayName: Default node size by
+    description: "scenes (default) or orgasms (orgasm count; the earlier value o is still read)."
     type: STRING
   defaultFilters:
     displayName: Filters when the page opens (JSON)
