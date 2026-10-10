@@ -74,6 +74,22 @@ class in this browser.
 | **Rankings, edge with link to Stash** | **"Show in network" on the performer page** | **Phone: path by tapping** |
 | ![Rankings](screenshots/rankings.png) | ![Show in network](screenshots/show-in-network.png) | ![Phone](screenshots/mobile.png) |
 
+## 3D view
+
+The "3D" button next to the title (or `?view=3d`) shows the same network in three dimensions; "2D" goes
+back. It needs WebGL; without it the button is not there, and if WebGL fails the page returns to 2D with
+a note. three.js is bundled and only loaded when 3D is opened.
+
+- Drag to turn, right or Shift drag to move, wheel to zoom; on touch screens one finger turns, two
+  pinch and move. A large network (150 performers or more) starts at the favorites and their partners.
+- Hover a performer for their card, an edge for a small card with the pair; click or tap a performer
+  to highlight their network, an edge for its detail, double-click to open the performer page. Paths,
+  rankings, search, filters and links work as in 2D.
+- Performers are drawn as spheres, chips or flat discs with their face (setting "Performers in the 3D
+  view"); the shapes cost the same. Edges get fainter the more there are, and a fog fades the back.
+- Performance: the whole network is two draw calls; laying out 4,581 performers and 26,841 edges takes
+  about 11 s in the background.
+
 ## Counting rule
 
 Edge strength is counted in one of two ways (sidebar "Count edge strength by"; kept in the URL as

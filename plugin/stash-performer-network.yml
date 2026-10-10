@@ -2,7 +2,7 @@ name: Performer Network
 description: >-
   Network page of who performed with whom; the more collaborations, the thicker the edge.
   Adds a "Network" entry to the navbar. All libraries are bundled locally (no CDN).
-version: 0.2.0
+version: 0.3.0
 ui:
   # Only this small entry script runs on every Stash page; vis-network and MediaPipe are
   # loaded lazily from the asset path below when the network page is opened.
@@ -36,6 +36,10 @@ settings:
       Which square of the performer image is shown when no face is found or face crops are off: auto
       (default; top for images more than 1.5 times as high as wide, else upper third), top, upperThird or
       center.
+    type: STRING
+  nodeShape3d:
+    displayName: Performers in the 3D view
+    description: "sphere (default; a lit ball with the face), chip (a coin with the face and a rim) or flat."
     type: STRING
   labelZoom:
     displayName: Minimum name size on screen (px)

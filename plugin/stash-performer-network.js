@@ -11,6 +11,7 @@
  * Bundled libraries (no CDN, loaded lazily from the plugin's asset path when the page opens):
  *   vendor/vis-network  vis-network 10.1.2            (Apache-2.0 OR MIT)
  *   vendor/mediapipe    @mediapipe/tasks-vision 1.0.1  (Apache-2.0), model blaze_face_short_range
+ *   vendor/three        three 0.186.1                  (MIT), only for the 3D view, loaded with import()
  * UI texts: locales/<code>.json, loaded at runtime from the asset path (see docs/translating.md).
  */
 (function () {
@@ -272,6 +273,9 @@
 
   var SIZE = 160;
   function initialsImage(name, color) {
+    return initialsCanvas(name, color).toDataURL("image/png");
+  }
+  function initialsCanvas(name, color) {
     var c = document.createElement("canvas");
     c.width = c.height = SIZE;
     var g = c.getContext("2d");
@@ -284,7 +288,7 @@
     g.textAlign = "center";
     g.textBaseline = "middle";
     g.fillText(initials(name), SIZE / 2, SIZE / 2 + 4);
-    return c.toDataURL("image/png");
+    return c;
   }
 
   // Crops are canvases: drawn on the network directly, encoded (toUrl) only for the cache and the cards.
@@ -580,6 +584,7 @@
   // ------------------------------------------------------------------ view
 
   var HIGHLIGHT = "#f5a623";
+  var HOVER_EDGE = "#ffd27a"; // a hovered edge in the 3D view
   var PATH_COLOR = "#ff6b3d";
   var NODE_MIN = 10, NODE_MAX = 46; // node radius range (vis-network "scaling")
   var HOVER_DELAY_MS = 60;
@@ -852,6 +857,7 @@
     });
     f.countBy = readCountBy(this.settings.defaultCountBy);
     this.showAll = v.showAll; // no reduced start view (see Core.limitGraph)
+    this.view3d = v.view === "3d" && webglAvailable(); // 3D view
     this.initialView = v.focus || v.path || v.edge ? { focus: v.focus, path: v.path, edge: v.edge } : null; // opened once the layout is done
     // comparing and measuring: ?spnLayout=page (vis-network on the page) or worker, regardless of size
     this.layoutMode = ["page", "worker"].indexOf(q.get("spnLayout")) >= 0 ? q.get("spnLayout") : null;
@@ -862,6 +868,7 @@
     var m = this.mode || {};
     var query = Core.writeView(this.f, this.settings, this.base, {
       showAll: this.showAll,
+      view: this.view3d ? "3d" : null,
       focus: m.kind === "focus" ? m.pid : null,
       path: m.kind === "path" ? [m.nodes[0], m.nodes[m.nodes.length - 1]] : null,
       edge: m.kind === "edge" ? [this.edgeIndex[m.id].from, this.edgeIndex[m.id].to] : null,
@@ -1308,6 +1315,13 @@
     s.appendChild(
       el("div", { class: CSS + "-head" }, [
         el("h4", { text: t("title") }),
+        webglAvailable()
+          ? el("button", {
+            type: "button", class: "btn btn-sm btn-secondary " + CSS + "-gear " + CSS + "-view-toggle", id: CSS + "-view-toggle",
+            title: t(this.view3d ? "view2d" : "view3d"), "aria-label": t(this.view3d ? "view2d" : "view3d"),
+            text: this.view3d ? "2D" : "3D", onclick: function () { self.switchView(!self.view3d); },
+          })
+          : null,
         el("button", {
           type: "button", class: "btn btn-sm btn-secondary " + CSS + "-gear", id: CSS + "-copy-link",
           title: t("copyLink"), "aria-label": t("copyLink"),
@@ -1553,6 +1567,30 @@
     },
   };
 
+  // The 3D layout (Core.runLayout3D) in its own worker, same message shape plus z.
+  var LayoutWorker3D = {
+    url: null,
+    create: function () {
+      if (LayoutWorker.failed || !window.Worker || !window.Blob || !window.URL || !URL.createObjectURL) return null;
+      try {
+        if (!this.url) {
+          var src =
+            "var runLayout3D = " + Core.runLayout3D.toString() + ";\n" +
+            "self.onmessage = function (e) {\n" +
+            "  runLayout3D(e.data, function (x, y, z, iterations, done) {\n" +
+            "    var px = new Float32Array(x), py = new Float32Array(y), pz = new Float32Array(z);\n" +
+            "    self.postMessage({ x: px, y: py, z: pz, iterations: iterations, done: done }, [px.buffer, py.buffer, pz.buffer]);\n" +
+            "  });\n" +
+            "};\n";
+          this.url = URL.createObjectURL(new Blob([src], { type: "text/javascript" }));
+        }
+        return new Worker(this.url);
+      } catch (e) {
+        return null;
+      }
+    },
+  };
+
   NetworkView.prototype.stopLayoutWorker = function () {
     if (this.layoutWorker) this.layoutWorker.terminate();
     this.layoutWorker = null;
@@ -1612,6 +1650,515 @@
     this.fitAfterDraw = true;
     this.network.redraw();
   };
+  // ------------------------------------------------------------------ 3D view (?view=3d)
+  // Drawn with three.js (vendor/three, loaded with import() when 3D is opened): every performer is one
+  // instance of a camera-facing quad (face from an atlas texture, gender ring in the shader), all edges
+  // are one LineSegments, so the whole network is two draw calls whatever its size. Graph3D answers the
+  // calls NetworkView makes on vis-network (selectNodes, fit, focus, redraw, ...), so filters, panels,
+  // rankings and paths work unchanged.
+  var threePromise = null;
+  function loadThree() {
+    if (!threePromise)
+      threePromise = import(VENDOR + "three/three.module.js").catch(function (e) {
+        threePromise = null;
+        throw e;
+      });
+    return threePromise;
+  }
+  function webglAvailable() {
+    try {
+      var c = document.createElement("canvas");
+      return !!(window.WebGLRenderingContext && (c.getContext("webgl2") || c.getContext("webgl")));
+    } catch (e) {
+      return false;
+    }
+  }
+  var ATLAS_CELL = 128, ATLAS_MIN_CELL = 48, LAYOUT3D_MAX_STEPS_LARGE = 300;
+  var NODE_SHAPES = { flat: 0, chip: 1, sphere: 2 }; // setting nodeShape3d
+
+  function Graph3D(view, T) {
+    var self = this;
+    this.is3d = true;
+    this.view = view;
+    this.T = T;
+    this.box = view.canvas;
+    this.renderer = new T.WebGLRenderer({ antialias: true });
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    this.renderer.domElement.className = CSS + "-gl";
+    this.box.appendChild(this.renderer.domElement);
+    this.scene = new T.Scene();
+    this.scene.fog = new T.Fog(0x000000, 1, 2); // colour and range set in background() and render()
+    this.camera = new T.PerspectiveCamera(55, 1, 1, 200000);
+    this.target = new T.Vector3();
+    this.orbit = { theta: 0.6, phi: 1.2, radius: 2000 };
+    this.ids = [];
+    this.index = {};
+    this.selected = {};
+    this.alpha = null;
+    this.atlasDirty = true;
+    this.handlers = {};
+    this.background();
+    this.resize();
+    if (window.ResizeObserver) {
+      this.observer = new ResizeObserver(function () {
+        self.resize();
+      });
+      this.observer.observe(this.box);
+    }
+    this.bindControls();
+    this.renderer.domElement.addEventListener("webglcontextlost", function (ev) {
+      ev.preventDefault();
+      view.lost3d();
+    });
+  }
+  Graph3D.prototype.background = function () {
+    var bg = getComputedStyle(this.view.root).getPropertyValue("--spn-bg").trim() || (this.view.dark ? "#1b252c" : "#f6f7f9");
+    this.renderer.setClearColor(new this.T.Color(bg), 1);
+    this.scene.fog.color.set(bg);
+  };
+  Graph3D.prototype.resize = function () {
+    var w = this.box.clientWidth || 300, h = this.box.clientHeight || 300;
+    this.width = w;
+    this.height = h;
+    this.renderer.setSize(w, h, false);
+    this.renderer.domElement.style.width = w + "px";
+    this.renderer.domElement.style.height = h + "px";
+    this.camera.aspect = w / h;
+    this.camera.updateProjectionMatrix();
+    this.redraw();
+  };
+
+  // Nodes and edges of the current graph; positions follow with setPositions.
+  Graph3D.prototype.setGraph = function (ids, edges, radius, nodeColor, edgeColor) {
+    var T = this.T, self = this, n = ids.length, m = edges.length;
+    this.clearMeshes();
+    this.ids = ids.slice();
+    this.index = {};
+    ids.forEach(function (id, i) {
+      self.index[id] = i;
+    });
+    this.edges = edges;
+    this.radius = radius;
+    this.pos = new Float32Array(n * 3);
+    // atlas: the largest nodes first get a cell
+    var order = ids.map(function (id, i) { return i; }).sort(function (a, b) { return radius[b] - radius[a]; });
+    this.grid = Core.atlasGrid(n, this.renderer.capabilities.maxTextureSize, ATLAS_CELL, ATLAS_MIN_CELL);
+    this.cellOf = new Int32Array(n).fill(-1);
+    order.slice(0, this.grid.count).forEach(function (i, c) {
+      self.cellOf[i] = c;
+    });
+    this.atlas = document.createElement("canvas");
+    this.atlas.width = this.atlas.height = this.grid.side;
+    this.texture = new T.CanvasTexture(this.atlas);
+    this.texture.colorSpace = T.SRGBColorSpace;
+    this.texture.generateMipmaps = true;
+    this.texture.minFilter = T.LinearMipmapLinearFilter;
+
+    var geo = new T.InstancedBufferGeometry().copy(new T.PlaneGeometry(2, 2));
+    geo.instanceCount = n;
+    var size = new Float32Array(n), ring = new Float32Array(n * 3), cell = new Float32Array(n * 2), alpha = new Float32Array(n).fill(1);
+    var col = new T.Color();
+    ids.forEach(function (id, i) {
+      size[i] = radius[i];
+      col.set(nodeColor(id));
+      ring.set([col.r, col.g, col.b], i * 3);
+      var c = self.cellOf[i];
+      cell.set(c < 0 ? [-1, -1] : [(c % self.grid.per) / self.grid.per, 1 - (Math.floor(c / self.grid.per) + 1) / self.grid.per], i * 2);
+    });
+    this.attr = {
+      offset: new T.InstancedBufferAttribute(this.pos, 3),
+      size: new T.InstancedBufferAttribute(size, 1),
+      ring: new T.InstancedBufferAttribute(ring, 3),
+      cell: new T.InstancedBufferAttribute(cell, 2),
+      alpha: new T.InstancedBufferAttribute(alpha, 1),
+    };
+    Object.keys(this.attr).forEach(function (k) {
+      geo.setAttribute(k, self.attr[k]);
+    });
+    this.nodeMaterial = new T.ShaderMaterial({
+      uniforms: {
+        map: { value: this.texture }, per: { value: this.grid.per }, fill: { value: col.set(this.view.dark ? "#3a4853" : "#c9d1d8").clone() }, depthFade: { value: 0 },
+        shape: { value: NODE_SHAPES[this.view.settings.nodeShape3d] || 0 },
+      },
+      transparent: true,
+      depthWrite: true,
+      vertexShader:
+        "attribute vec3 offset; attribute float size; attribute vec3 ring; attribute vec2 cell; attribute float alpha;" +
+        "uniform float depthFade; varying vec2 vUv; varying vec2 vCell; varying vec3 vRing; varying float vAlpha;" +
+        "void main() { vUv = uv; vCell = cell; vRing = ring;" +
+        "  vec4 mv = modelViewMatrix * vec4(offset, 1.0); mv.xy += position.xy * size;" +
+        "  vAlpha = alpha * (depthFade > 0.0 ? clamp(1.35 - (-mv.z) / depthFade, 0.18, 1.0) : 1.0);" +
+        "  gl_Position = projectionMatrix * mv; }",
+      // shape 0 flat: face and gender ring; 1 chip: a coin, the face inside a bevelled rim; 2 sphere: a lit
+      // ball, the face on its front. All three are drawn on the same flat quad (an impostor), so the cost
+      // does not change.
+      fragmentShader:
+        "uniform sampler2D map; uniform float per; uniform vec3 fill; uniform float shape; varying vec2 vUv; varying vec2 vCell; varying vec3 vRing; varying float vAlpha;" +
+        "const vec3 L = vec3(-0.42, 0.52, 0.74);" +
+        "void main() { vec2 p = vUv * 2.0 - 1.0; float d = length(p); if (d > 1.0) discard;" +
+        "  float inner = shape > 0.5 ? 0.78 : 0.84;" +
+        "  vec2 fuv = shape > 0.5 ? 0.5 + 0.5 * p / inner : vUv;" +
+        "  vec4 c = vCell.x < 0.0 ? vec4(fill, 1.0) : texture2D(map, vCell + clamp(fuv, 0.0, 1.0) / per);" +
+        "  if (d > inner) c = vec4(vRing, 1.0);" +
+        "  if (shape > 1.5) {" +
+        "    vec3 n = vec3(p, sqrt(max(0.0, 1.0 - d * d))); float diff = 0.55 + 0.5 * max(dot(n, normalize(L)), 0.0);" +
+        "    float spec = pow(max(dot(reflect(-normalize(L), n), vec3(0.0, 0.0, 1.0)), 0.0), 40.0) * smoothstep(0.45, 0.8, d);" +
+        "    c.rgb = c.rgb * diff + vec3(0.4) * spec; c.rgb *= 0.8 + 0.2 * n.z;" +
+        "  } else if (shape > 0.5) {" +
+        "    float t = clamp((d - inner) / (1.0 - inner), 0.0, 1.0);" +
+        "    if (d > inner) { vec3 n = normalize(vec3(p * (t - 0.5) * 2.2, 1.0)); c.rgb *= 0.7 + 0.55 * max(dot(n, normalize(L)), 0.0); }" +
+        "    else c.rgb *= 0.86 + 0.14 * smoothstep(inner, inner - 0.12, d);" +
+        "  }" +
+        "  gl_FragColor = vec4(c.rgb, c.a * vAlpha); if (gl_FragColor.a < 0.02) discard; }",
+    });
+    this.points = new T.Mesh(geo, this.nodeMaterial);
+    this.points.frustumCulled = false;
+    this.points.renderOrder = 1; // after the edges, so faces cover the lines that end in them
+    this.scene.add(this.points);
+
+    var lineGeo = new T.BufferGeometry();
+    this.linePos = new Float32Array(m * 6);
+    this.lineCol = new Float32Array(m * 8);
+    // the more edges, the fainter each one, so a large network is not a white cloud (0.32 up to ~1,500
+    // edges, 0.06 at about 40,000)
+    this.edgeAlpha = Math.max(0.06, Math.min(0.32, 0.32 * Math.sqrt(1500 / Math.max(m, 1))));
+    this.edgeBase = edges.map(function (e) {
+      col.set(edgeColor(e));
+      return [col.r, col.g, col.b];
+    });
+    lineGeo.setAttribute("position", new T.BufferAttribute(this.linePos, 3));
+    lineGeo.setAttribute("color", new T.BufferAttribute(this.lineCol, 4));
+    this.lines = new T.LineSegments(lineGeo, new T.LineBasicMaterial({ vertexColors: true, transparent: true, depthWrite: false }));
+    this.lines.frustumCulled = false;
+    this.lines.renderOrder = 0;
+    this.scene.add(this.lines);
+    this.emphasize(null);
+    this.atlasDirty = true;
+    this.redraw();
+  };
+  Graph3D.prototype.clearMeshes = function () {
+    if (this.points) {
+      this.scene.remove(this.points);
+      this.points.geometry.dispose();
+      this.nodeMaterial.dispose();
+      this.texture.dispose();
+      this.points = null;
+    }
+    if (this.lines) {
+      this.scene.remove(this.lines);
+      this.lines.geometry.dispose();
+      this.lines.material.dispose();
+      this.lines = null;
+    }
+  };
+  Graph3D.prototype.setPositions = function (x, y, z) {
+    var n = this.ids.length, P = this.pos, L = this.linePos, idx = this.index;
+    for (var i = 0; i < n; i++) {
+      P[3 * i] = x[i];
+      P[3 * i + 1] = y[i];
+      P[3 * i + 2] = z[i];
+    }
+    this.edges.forEach(function (e, k) {
+      var a = idx[e.from], b = idx[e.to];
+      L.set([P[3 * a], P[3 * a + 1], P[3 * a + 2], P[3 * b], P[3 * b + 1], P[3 * b + 2]], 6 * k);
+    });
+    this.attr.offset.needsUpdate = true;
+    this.lines.geometry.attributes.position.needsUpdate = true;
+    this.lines.geometry.computeBoundingSphere();
+    this.redraw();
+  };
+
+  // Faces into the atlas: the node's picture (crop, image or initials, NetworkView.pics) per cell. All
+  // cells after setGraph, afterwards only those of performers whose picture changed (picChanged).
+  Graph3D.prototype.picChanged = function (id) {
+    if (this.index[id] == null) return;
+    (this.dirtyPics = this.dirtyPics || {})[id] = true;
+  };
+  Graph3D.prototype.paintAtlas = function () {
+    if (!this.atlas || (!this.atlasDirty && !this.dirtyPics)) return;
+    var ctx = this.atlas.getContext("2d"), g = this.grid, pics = this.view.pics, self = this;
+    var only = this.atlasDirty ? null : this.dirtyPics;
+    this.atlasDirty = false;
+    this.dirtyPics = null;
+    if (!only) ctx.clearRect(0, 0, g.side, g.side);
+    (only ? Object.keys(only) : this.ids).forEach(function (id) {
+      var i = self.index[id], c = i == null ? -1 : self.cellOf[i];
+      if (c < 0) return;
+      var x = (c % g.per) * g.cell, y = Math.floor(c / g.per) * g.cell, pic = pics[id];
+      if (!pic) pic = self.view.initialsPic(id);
+      if (only) ctx.clearRect(x, y, g.cell, g.cell);
+      try {
+        ctx.drawImage(pic, x, y, g.cell, g.cell);
+      } catch (e) {
+        /* picture not decodable: the cell stays empty and the node shows the fill colour */
+      }
+    });
+    this.texture.needsUpdate = true;
+  };
+
+  // Emphasis like the 2D view: nodes outside keep.nodes faded, accented edges in keep.color.
+  Graph3D.prototype.emphasize = function (keep) {
+    if (!this.attr) return;
+    var self3 = this, a = this.attr.alpha.array, C = this.lineCol, base = this.edgeBase, ids = this.ids, T = this.T;
+    var accent = keep && new T.Color(keep.color);
+    for (var i = 0; i < ids.length; i++) a[i] = !keep || keep.nodes[ids[i]] ? 1 : 0.12;
+    this.edges.forEach(function (e, k) {
+      var id = e.from + "-" + e.to, rgb = base[k], al = keep && keep.edges[id] ? 0.45 : self3.edgeAlpha;
+      if (keep) {
+        if (keep.accent[id]) {
+          rgb = [accent.r, accent.g, accent.b];
+          al = 0.95;
+        } else if (!keep.edges[id]) al = 0.03;
+      }
+      C.set([rgb[0], rgb[1], rgb[2], al, rgb[0], rgb[1], rgb[2], al], 8 * k);
+    });
+    this.attr.alpha.needsUpdate = true;
+    this.lines.geometry.attributes.color.needsUpdate = true;
+    this.redraw();
+  };
+
+  // -- the calls NetworkView makes on vis-network
+  Graph3D.prototype.selectNodes = function (ids) {
+    var self = this;
+    this.selected = {};
+    (ids || []).forEach(function (id) {
+      self.selected[id] = true;
+    });
+    this.redraw();
+  };
+  Graph3D.prototype.selectEdges = function () {};
+  Graph3D.prototype.unselectAll = function () {
+    this.selected = {};
+    this.redraw();
+  };
+  Graph3D.prototype.setOptions = function () {};
+  Graph3D.prototype.stabilize = function () {};
+  Graph3D.prototype.on = function () {};
+  Graph3D.prototype.getScale = function () {
+    return 1;
+  };
+  Graph3D.prototype.redraw = function () {
+    var self = this;
+    if (this.frame || this.destroyed) return;
+    this.frame = requestAnimationFrame(function () {
+      self.frame = null;
+      self.render();
+    });
+  };
+  Graph3D.prototype.render = function () {
+    if (this.destroyed) return;
+    this.paintAtlas();
+    var o = this.orbit, sp = Math.sin(o.phi);
+    this.camera.position.set(this.target.x + o.radius * sp * Math.sin(o.theta), this.target.y + o.radius * Math.cos(o.phi), this.target.z + o.radius * sp * Math.cos(o.theta));
+    this.camera.lookAt(this.target);
+    // depth: lines fade into the background by the scene fog, nodes by depthFade in their shader
+    this.scene.fog.near = o.radius * 0.7;
+    this.scene.fog.far = o.radius * 2.4;
+    if (this.nodeMaterial) this.nodeMaterial.uniforms.depthFade.value = o.radius * 1.3;
+    this.renderer.render(this.scene, this.camera);
+    if (this.animation) this.step();
+  };
+  // fit: the bounding sphere of the given nodes (all if none) fills the view
+  Graph3D.prototype.fit = function (opts) {
+    var ids = opts && opts.nodes && opts.nodes.length ? opts.nodes : this.ids, P = this.pos, self = this;
+    if (!ids.length) return;
+    var cx = 0, cy = 0, cz = 0, r = 0, k = 0;
+    ids.forEach(function (id) {
+      var i = self.index[id];
+      if (i == null) return;
+      cx += P[3 * i];
+      cy += P[3 * i + 1];
+      cz += P[3 * i + 2];
+      k++;
+    });
+    if (!k) return;
+    cx /= k;
+    cy /= k;
+    cz /= k;
+    ids.forEach(function (id) {
+      var i = self.index[id];
+      if (i == null) return;
+      r = Math.max(r, Math.hypot(P[3 * i] - cx, P[3 * i + 1] - cy, P[3 * i + 2] - cz) + (self.radius[i] || 0));
+    });
+    var dist = Math.max(200, r / Math.sin((this.camera.fov * Math.PI) / 360) * 1.05);
+    this.flyTo(cx, cy, cz, dist, opts && opts.animation);
+  };
+  Graph3D.prototype.focus = function (id, opts) {
+    var i = this.index[id];
+    if (i == null) return;
+    var P = this.pos;
+    this.flyTo(P[3 * i], P[3 * i + 1], P[3 * i + 2], Math.max(250, (this.radius[i] || 20) * 14), opts && opts.animation);
+  };
+  Graph3D.prototype.flyTo = function (x, y, z, dist, animate) {
+    var from = { x: this.target.x, y: this.target.y, z: this.target.z, r: this.orbit.radius };
+    if (!animate) {
+      this.target.set(x, y, z);
+      this.orbit.radius = dist;
+      this.animation = null;
+      return this.redraw();
+    }
+    this.animation = { from: from, to: { x: x, y: y, z: z, r: dist }, start: performance.now(), ms: 600 };
+    this.redraw();
+  };
+  Graph3D.prototype.step = function () {
+    var a = this.animation, t = Math.min(1, (performance.now() - a.start) / a.ms), e = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+    this.target.set(a.from.x + (a.to.x - a.from.x) * e, a.from.y + (a.to.y - a.from.y) * e, a.from.z + (a.to.z - a.from.z) * e);
+    this.orbit.radius = a.from.r + (a.to.r - a.from.r) * e;
+    if (t >= 1) this.animation = null;
+    this.redraw();
+  };
+
+  // nearest node under a point of the canvas (CSS px), within its drawn radius plus a few px
+  Graph3D.prototype.pick = function (sx, sy) {
+    var P = this.pos, v = new this.T.Vector3(), best = null, bd = Infinity, w = this.width, h = this.height;
+    var a = this.attr && this.attr.alpha.array;
+    var pxPerUnit = h / (2 * Math.tan((this.camera.fov * Math.PI) / 360));
+    for (var i = 0; i < this.ids.length; i++) {
+      if (a && a[i] < 0.5) continue; // faded nodes are not hit while something is emphasized
+      v.set(P[3 * i], P[3 * i + 1], P[3 * i + 2]);
+      var dist = v.distanceTo(this.camera.position);
+      v.project(this.camera);
+      if (v.z > 1 || v.z < -1) continue;
+      var dx = (v.x + 1) * 0.5 * w - sx, dy = (1 - v.y) * 0.5 * h - sy, d = Math.sqrt(dx * dx + dy * dy);
+      var rr = Math.max(6, (this.radius[i] * pxPerUnit) / dist) + 3;
+      if (d <= rr && dist < bd) {
+        bd = dist;
+        best = this.ids[i];
+      }
+    }
+    return best;
+  };
+
+  // edge under a point: the visible edge whose drawn line passes closest, within EDGE_PICK_PX
+  // above EDGE_HOVER_MAX edges an edge is found on click only (one search over 26,841 edges takes ~19 ms
+  // with software rendering, too much for every pointer move)
+  var EDGE_PICK_PX = 6, EDGE_HOVER_MAX = 8000;
+  Graph3D.prototype.pickEdge = function (sx, sy) {
+    var n = this.ids.length, P = this.pos, v = new this.T.Vector3(), w = this.width, h = this.height;
+    var X = (this.screenX = this.screenX && this.screenX.length === n ? this.screenX : new Float32Array(n));
+    var Y = (this.screenY = this.screenY && this.screenY.length === n ? this.screenY : new Float32Array(n));
+    var ok = (this.screenOk = this.screenOk && this.screenOk.length === n ? this.screenOk : new Uint8Array(n));
+    for (var i = 0; i < n; i++) {
+      v.set(P[3 * i], P[3 * i + 1], P[3 * i + 2]).project(this.camera);
+      ok[i] = v.z < 1 && v.z > -1 ? 1 : 0;
+      X[i] = (v.x + 1) * 0.5 * w;
+      Y[i] = (1 - v.y) * 0.5 * h;
+    }
+    var best = null, bd = EDGE_PICK_PX, idx = this.index, C = this.lineCol;
+    for (var k = 0; k < this.edges.length; k++) {
+      if (C[8 * k + 3] < 0.05) continue; // faded out by the current emphasis
+      var e = this.edges[k], a = idx[e.from], b = idx[e.to];
+      if (!ok[a] || !ok[b]) continue;
+      var dx = X[b] - X[a], dy = Y[b] - Y[a], len2 = dx * dx + dy * dy;
+      var t = len2 ? Math.max(0, Math.min(1, ((sx - X[a]) * dx + (sy - Y[a]) * dy) / len2)) : 0;
+      var ex = X[a] + t * dx - sx, ey = Y[a] + t * dy - sy, d = Math.sqrt(ex * ex + ey * ey);
+      if (d < bd) {
+        bd = d;
+        best = e.from + "-" + e.to;
+      }
+    }
+    return best;
+  };
+
+  // Mouse: drag rotates, right or shift drag pans, wheel zooms; touch: one finger rotates, two pinch and
+  // pan; a short tap or click without movement picks.
+  Graph3D.prototype.bindControls = function () {
+    var self = this, el3 = this.renderer.domElement, pointers = {}, start = null, moved = 0, lastPinch = null, view = this.view;
+    el3.style.touchAction = "none";
+    function local(ev) {
+      var r = el3.getBoundingClientRect();
+      return { x: ev.clientX - r.left, y: ev.clientY - r.top };
+    }
+    function pan(dx, dy) {
+      var o = self.orbit, k = (o.radius * Math.tan((self.camera.fov * Math.PI) / 360) * 2) / self.height;
+      var right = new self.T.Vector3().setFromMatrixColumn(self.camera.matrix, 0), up = new self.T.Vector3().setFromMatrixColumn(self.camera.matrix, 1);
+      self.target.addScaledVector(right, -dx * k).addScaledVector(up, dy * k);
+    }
+    el3.addEventListener("contextmenu", function (ev) {
+      ev.preventDefault();
+    });
+    el3.addEventListener("pointerdown", function (ev) {
+      el3.setPointerCapture(ev.pointerId);
+      pointers[ev.pointerId] = local(ev);
+      start = { p: local(ev), button: ev.button, shift: ev.shiftKey, time: performance.now(), ctrl: ev.ctrlKey || ev.metaKey };
+      moved = 0;
+      self.animation = null;
+      view.hideCard();
+      view.hover3dKey = null; // hovering the same node again after a drag shows its card again
+    });
+    el3.addEventListener("pointermove", function (ev) {
+      var p = local(ev), prev = pointers[ev.pointerId];
+      if (!prev) {
+        // hover without a button: card for the performer under the pointer
+        if (ev.pointerType === "mouse") {
+          self.hoverAt = p;
+          if (!self.hoverFrame)
+            self.hoverFrame = requestAnimationFrame(function () {
+              self.hoverFrame = null;
+              var q = self.hoverAt, hit = self.pick(q.x, q.y);
+              view.hover3d(hit, q, hit == null && self.edges.length <= EDGE_HOVER_MAX ? self.pickEdge(q.x, q.y) : null);
+            });
+        }
+        return;
+      }
+      var dx = p.x - prev.x, dy = p.y - prev.y;
+      pointers[ev.pointerId] = p;
+      moved += Math.abs(dx) + Math.abs(dy);
+      var ids = Object.keys(pointers);
+      if (ids.length === 2) {
+        var a = pointers[ids[0]], b = pointers[ids[1]], dist = Math.hypot(a.x - b.x, a.y - b.y);
+        if (lastPinch) self.orbit.radius = Math.max(50, self.orbit.radius * (lastPinch / Math.max(dist, 1)));
+        lastPinch = dist;
+        pan(dx / 2, dy / 2);
+      } else if (start && (start.button === 2 || start.shift)) pan(dx, dy);
+      else {
+        self.orbit.theta -= dx * 0.006;
+        self.orbit.phi = Math.max(0.05, Math.min(Math.PI - 0.05, self.orbit.phi - dy * 0.006));
+      }
+      self.redraw();
+    });
+    function up(ev) {
+      var wasTap = start && moved < 6 && performance.now() - start.time < 600 && Object.keys(pointers).length === 1;
+      delete pointers[ev.pointerId];
+      lastPinch = null;
+      if (wasTap) {
+        var p = local(ev);
+        var pid = self.pick(p.x, p.y);
+        view.click3d(pid, start.ctrl, pid == null ? self.pickEdge(p.x, p.y) : null, ev.pointerType !== "mouse" ? p : null);
+      }
+      if (!Object.keys(pointers).length) start = null;
+    }
+    el3.addEventListener("pointerup", up);
+    el3.addEventListener("pointercancel", function (ev) {
+      delete pointers[ev.pointerId];
+      lastPinch = null;
+      start = null;
+    });
+    el3.addEventListener("pointerleave", function (ev) {
+      if (ev.pointerType === "mouse" && !pointers[ev.pointerId]) view.hover3d(null);
+    });
+    el3.addEventListener("wheel", function (ev) {
+      ev.preventDefault();
+      self.animation = null;
+      self.orbit.radius = Math.max(50, self.orbit.radius * Math.exp(ev.deltaY * 0.0012));
+      view.hideCard();
+      self.redraw();
+    }, { passive: false });
+    el3.addEventListener("dblclick", function (ev) {
+      var p = local(ev), id = self.pick(p.x, p.y);
+      if (id != null) view.history.push("/performers/" + id);
+    });
+  };
+  Graph3D.prototype.destroy = function () {
+    this.destroyed = true;
+    if (this.frame) cancelAnimationFrame(this.frame);
+    if (this.hoverFrame) cancelAnimationFrame(this.hoverFrame);
+    if (this.observer) this.observer.disconnect();
+    this.clearMeshes();
+    this.renderer.dispose();
+    if (this.renderer.domElement.parentNode) this.renderer.domElement.parentNode.removeChild(this.renderer.domElement);
+  };
+
 
   NetworkView.prototype.drawNode = function (ctx, id, x, y, r, sr, state) {
     var p = this.base.performers[id];
@@ -1756,6 +2303,8 @@
     if (r) r.max = Math.max(10, strongest);
 
     this.colorEdgesByOrgasm();
+    this.root.classList.toggle(CSS + "-3d", !!this.view3d); // panels get their 3D look (CSS) only here
+    if (this.view3d) return this.draw3d();
     if (!this.renderNode) this.makeRenderer();
     this.stopLayoutWorker();
     var P = Core.LAYOUT_PARAMS;
@@ -1974,9 +2523,259 @@
     return { nodes: nodes, edges: edges, accent: accent, color: HIGHLIGHT };
   };
 
+  // -- 3D view: drawing, layout, pointer, switching
+  NetworkView.prototype.draw3d = function () {
+    var self = this, t = this.t.bind(this), drawId = this.drawId = (this.drawId || 0) + 1;
+    this.stopLayoutWorker();
+    this.setStatus(t("loading3d"));
+    loadThree()
+      .then(function (T) {
+        if (self.destroyed || self.drawId !== drawId) return;
+        if (!self.network) self.network = new Graph3D(self, T);
+        var g = self.graph, ids = g.nodes, c = self.colors(), b = self.base;
+        self.nodeRadius = self.radii(ids);
+        var radius = ids.map(function (id) { return self.nodeRadius[id]; });
+        self.nodes = { get: function (id) { return self.network.index[id] != null ? { id: id } : null; } };
+        self.network.setGraph(ids, g.edges, radius, function (id) {
+          return b.genderColors[genderOf(b, b.performers[id])];
+        }, function (e) {
+          return e.baseColor || c.edge;
+        });
+        // pictures: the nodes with an atlas cell want theirs, the largest first
+        self.wanted = {};
+        ids.forEach(function (id, i) {
+          if (self.network.cellOf[i] >= 0) self.wanted[id] = radius[i];
+        });
+        self.pumpImages();
+        self.layout3d(ids, g.edges, radius, drawId);
+        self.setStatus([t("statusPeople", { count: ids.length }), t("statusEdges", { count: g.edges.length }), t("layouting")].join(" · "));
+        self.fillRankings();
+      })
+      .catch(function (e) {
+        console.warn(PLUGIN_ID + ": 3D view unavailable", e);
+        self.lost3d(e && e.message ? e.message : String(e));
+      });
+  };
+
+  NetworkView.prototype.layout3d = function (ids, edges, radius, drawId) {
+    var self = this, index = {}, n = ids.length;
+    ids.forEach(function (id, i) {
+      index[id] = i;
+    });
+    var E = new Int32Array(edges.length * 2);
+    edges.forEach(function (e, k) {
+      E[2 * k] = index[e.from];
+      E[2 * k + 1] = index[e.to];
+    });
+    var params = Object.assign({}, Core.LAYOUT_PARAMS, n > 1500 ? { iterations: LAYOUT3D_MAX_STEPS_LARGE } : {});
+    var input = { n: n, edges: E, radius: Float64Array.from(radius), params: params };
+    var fitted = false, start = this.initialView ? null : this.startNodes3d();
+    function place(x, y, z, done, iterations) {
+      if (self.destroyed || self.drawId !== drawId || !self.network || !self.network.is3d) return;
+      self.network.setPositions(x, y, z);
+      if (!fitted || done) self.network.fit({ animation: fitted, nodes: done ? start : null });
+      fitted = true;
+      if (!done) return;
+      self.timing.layoutSteps = iterations;
+      self.layoutFinished();
+    }
+    var w = LayoutWorker3D.create();
+    if (!w) {
+      // no worker: lay out on the page in one go (fewer steps), after the status line had a chance to show
+      return setTimeout(function () {
+        input.params = Object.assign({}, params, { iterations: Math.min(params.iterations, 150) });
+        var r = Core.runLayout3D(input);
+        place(r.x, r.y, r.z, true, r.iterations);
+      }, 30);
+    }
+    this.layoutWorker = w;
+    w.onmessage = function (ev) {
+      if (self.layoutWorker !== w) return;
+      var d = ev.data;
+      if (d.done) self.stopLayoutWorker();
+      place(d.x, d.y, d.z, d.done, d.iterations);
+    };
+    w.onerror = function (ev) {
+      if (ev && ev.preventDefault) ev.preventDefault();
+      if (self.layoutWorker !== w) return;
+      self.stopLayoutWorker();
+      var r = Core.runLayout3D(Object.assign({}, input, { params: Object.assign({}, params, { iterations: 150 }) }));
+      place(r.x, r.y, r.z, true, r.iterations);
+    };
+    w.postMessage(input);
+  };
+
+  // Where the camera looks once a large 3D network is laid out: the favorites and their partners (an
+  // overview of thousands of performers is a cloud); null = the whole network.
+  var START3D_MIN_NODES = 150;
+  NetworkView.prototype.startNodes3d = function () {
+    var g = this.graph, b = this.base.performers, out = {};
+    if (g.nodes.length < START3D_MIN_NODES) return null;
+    g.nodes.forEach(function (id) {
+      if (!b[id].favorite) return;
+      out[id] = true;
+      Object.keys(g.neighbours[id] || {}).forEach(function (n) {
+        out[n] = true;
+      });
+    });
+    var ids = Object.keys(out);
+    return ids.length ? ids : null;
+  };
+
+  // pointer events of the 3D view, the same reactions as the 2D view's click and hover handlers; edges
+  // are hit by their drawn line. On touch a tap also shows the performer's card next to the node.
+  NetworkView.prototype.click3d = function (pid, multi, edgeId, touchPos) {
+    if (pid == null) {
+      this.clearMode();
+      if (edgeId) this.selectEdge(edgeId);
+      return;
+    }
+    if (multi) {
+      if (this.pathStart && this.pathStart !== pid) {
+        var from = this.pathStart;
+        if (!this.showPath(from, pid)) this.showNoPath(from, pid);
+      } else {
+        this.focusPerformer(pid, false);
+        this.pathStart = pid;
+        this.showNodeDetail(pid);
+      }
+    } else if (this.pathFrom && this.pathFrom !== pid) this.pathTo(pid);
+    else if (this.mode && this.mode.kind === "focus" && this.mode.pid === pid) return this.clearMode();
+    else this.focusPerformer(pid, false);
+    if (touchPos) this.showTapCard(pid, touchPos);
+  };
+  // the card after a tap: next to the node, but never over the detail panel (on a phone the panel sits
+  // at the bottom), and gone again after TAP_CARD_MS or with the next touch
+  var TAP_CARD_MS = 3500;
+  NetworkView.prototype.showTapCard = function (pid, pos) {
+    var self = this;
+    this.showCard(pid, pos);
+    var card = this.card, det = this.detail;
+    if (!det.hidden) {
+      // layout boxes (offset*), not the drawn ones: the panel may still be in its entrance animation
+      var cTop = card.offsetTop, cH = card.offsetHeight, cL = card.offsetLeft, cW = card.offsetWidth;
+      var dTop = det.offsetTop, dH = det.offsetHeight, dL = det.offsetLeft, dW = det.offsetWidth;
+      if (cTop + cH > dTop && cTop < dTop + dH && cL + cW > dL && cL < dL + dW) {
+        var top = dTop - cH - 8;
+        if (top < 8) return this.hideCard();
+        card.style.top = top + "px";
+      }
+    }
+    clearTimeout(this.tapCardTimer);
+    this.tapCardTimer = setTimeout(function () {
+      if (!self.destroyed) self.hideCard();
+    }, TAP_CARD_MS);
+  };
+  // an edge as clicked in 2D: the pair emphasized and the edge detail, without moving the camera
+  NetworkView.prototype.selectEdge = function (edgeId) {
+    var e = this.edgeIndex[edgeId];
+    if (!e) return;
+    var nodes = {}, accent = {};
+    nodes[e.from] = nodes[e.to] = true;
+    accent[edgeId] = true;
+    this.mode = { kind: "edge", id: edgeId };
+    this.emphasize({ nodes: nodes, edges: {}, accent: accent, color: HIGHLIGHT });
+    this.showEdgeDetail(edgeId);
+  };
+  NetworkView.prototype.hover3d = function (pid, pos, edgeId) {
+    var self = this, key = pid != null ? "n" + pid : edgeId ? "e" + edgeId : null;
+    if (key === this.hover3dKey) return;
+    this.hover3dKey = key;
+    this.hover3dPid = pid;
+    clearTimeout(this.hoverTimer);
+    var el3 = this.network && this.network.renderer && this.network.renderer.domElement;
+    if (el3) el3.style.cursor = key ? "pointer" : "";
+    if (key == null) {
+      this.hideCard();
+      this.hoverTimer = setTimeout(function () {
+        if (!self.mode && !self.destroyed) self.emphasize(null);
+      }, HOVER_DELAY_MS);
+      return;
+    }
+    if (pid != null) {
+      this.hoverTimer = setTimeout(function () {
+        if (!self.mode && !self.destroyed) self.emphasize(self.neighbourhood(pid));
+      }, HOVER_DELAY_MS);
+      return this.showCard(pid, pos);
+    }
+    var e = this.edgeIndex[edgeId];
+    this.hoverTimer = setTimeout(function () {
+      if (self.mode || self.destroyed) return;
+      var nodes = {}, accent = {};
+      nodes[e.from] = nodes[e.to] = true;
+      accent[edgeId] = true;
+      self.emphasize({ nodes: nodes, edges: {}, accent: accent, color: HOVER_EDGE });
+    }, HOVER_DELAY_MS);
+    this.showEdgeCard(edgeId, pos);
+  };
+  // small card for a hovered edge: the two names, what they share and when
+  NetworkView.prototype.showEdgeCard = function (edgeId, pos) {
+    var e = this.edgeIndex[edgeId], b = this.base.performers;
+    if (!e) return;
+    this.card.innerHTML = "";
+    this.card.classList.add(CSS + "-card-mini");
+    this.card.appendChild(
+      el("div", { class: CSS + "-card-text" }, [
+        el("div", { class: CSS + "-card-name", text: b[e.from].name + " & " + b[e.to].name }),
+        el("div", { text: this.sharedSummary(e) }),
+        this.spanText(e.scenes) ? el("div", { class: CSS + "-card-span", text: this.spanText(e.scenes) }) : null,
+      ])
+    );
+    this.card.hidden = false;
+    var main = this.card.parentNode.getBoundingClientRect(), cv = this.canvas.getBoundingClientRect();
+    var x = cv.left - main.left + pos.x + 14, y = cv.top - main.top + pos.y + 14;
+    this.card.style.left = Math.max(8, Math.min(x, main.width - this.card.offsetWidth - 8)) + "px";
+    this.card.style.top = Math.max(8, Math.min(y, main.height - this.card.offsetHeight - 40)) + "px";
+  };
+  NetworkView.prototype.initialsPic = function (pid) {
+    var cache = (this.initialsCache = this.initialsCache || {});
+    if (!cache[pid]) {
+      var p = this.base.performers[pid];
+      cache[pid] = initialsCanvas(p.name, this.base.genderColors[genderOf(this.base, p)]);
+    }
+    return cache[pid];
+  };
+
+  // 2D <-> 3D: the drawing is replaced, filters, selection of the sidebar and URL stay
+  NetworkView.prototype.switchView = function (to3d, quiet) {
+    if (to3d && !webglAvailable()) return;
+    this.stopLayoutWorker();
+    if (this.network) this.network.destroy();
+    this.network = null;
+    this.nodes = null;
+    this.edges = null;
+    this.renderNode = null;
+    this.canvas.innerHTML = "";
+    this.view3d = !!to3d;
+    var q = new URLSearchParams(location.search);
+    if (this.view3d) q.set("view", "3d");
+    else q.delete("view");
+    var search = q.toString();
+    this.history.replace({ pathname: location.pathname, search: search ? "?" + search : "" });
+    var btn = this.root.querySelector("#" + CSS + "-view-toggle");
+    if (btn) {
+      btn.textContent = this.view3d ? "2D" : "3D";
+      btn.title = this.t(this.view3d ? "view2d" : "view3d");
+      btn.setAttribute("aria-label", this.t(this.view3d ? "view2d" : "view3d"));
+    }
+    this.draw();
+    if (!quiet) this.prepareImages();
+  };
+  // WebGL missing, three.js not loadable or the context lost: back to 2D with a note
+  NetworkView.prototype.lost3d = function (message) {
+    var self = this;
+    if (!this.view3d) return;
+    setTimeout(function () {
+      if (self.destroyed) return;
+      self.switchView(false, true);
+      self.setStatus(self.t("no3d", { message: message || "WebGL" }), true);
+    }, 0);
+  };
+
   // Node opacity is read by drawNode (nodeAlpha); only edges whose look actually changes are updated
   // (state remembered in edgeLook).
   NetworkView.prototype.emphasize = function (keep) {
+    if (this.network && this.network.is3d) return this.network.emphasize(keep);
     var self = this, c = this.colors();
     var edgeUpd = [], nodesChanged = false;
     this.edgeLook = this.edgeLook || {};
@@ -2489,6 +3288,7 @@
     var self = this;
     this.pics[pid] = pic;
     this.images[pid] = { kind: kind, url: url || null, canvas: url ? null : pic };
+    if (this.network && this.network.is3d) this.network.picChanged(pid);
     if (this.cardPid === pid && this.cardPic) this.cardPic.src = this.cardImage(pid); // the open card gets the crop
     if (this.redrawTimer) return;
     this.redrawTimer = setTimeout(function () {

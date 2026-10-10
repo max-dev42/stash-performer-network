@@ -211,3 +211,40 @@ fieldset.spn-field { min-width: 0; }
 .spn-years { justify-content: flex-start; }
 .spn-years .spn-year { width: auto; flex: 1 1 0; min-width: 0; }
 .spn-card-span { color: var(--spn-muted); font-size: 0.8rem; }
+
+/* 3D view */
+.spn-canvas .spn-gl { position: absolute; inset: 0; display: block; cursor: grab; }
+.spn-canvas .spn-gl:active { cursor: grabbing; }
+.spn-view-toggle { font-size: 0.75rem; font-weight: 700; min-width: 2.2rem; }
+
+/* 3D view: the floating panels get a little depth of their own (glass, shadow, a slight tilt towards the
+   network); text stays upright enough to read. 2D is not affected. */
+.spn-3d .spn-detail, .spn-3d .spn-card {
+  background: rgba(40, 52, 61, 0.86);
+  background: color-mix(in srgb, var(--spn-panel) 84%, transparent);
+  -webkit-backdrop-filter: blur(10px) saturate(1.2);
+  backdrop-filter: blur(10px) saturate(1.2);
+  border-color: color-mix(in srgb, var(--spn-line) 70%, #ffffff 30%);
+  box-shadow: 0 22px 48px rgba(0, 0, 0, 0.5), 0 3px 8px rgba(0, 0, 0, 0.35);
+}
+.spn-light.spn-3d .spn-detail, .spn-light.spn-3d .spn-card { background: rgba(255, 255, 255, 0.86); background: color-mix(in srgb, var(--spn-panel) 84%, transparent); }
+.spn-3d .spn-detail {
+  transform: perspective(1400px) rotateY(-4deg);
+  transform-origin: right center;
+  animation: spn-3d-in 0.24s ease-out;
+}
+.spn-3d .spn-card { transform: perspective(900px) rotateX(5deg); transform-origin: center top; }
+@keyframes spn-3d-in {
+  from { opacity: 0; transform: perspective(1400px) rotateY(-16deg) translateX(18px); }
+  to { opacity: 1; transform: perspective(1400px) rotateY(-4deg); }
+}
+@media (max-width: 767px) {
+  .spn-3d .spn-detail { transform: perspective(1200px) rotateX(5deg); transform-origin: center bottom; animation-name: spn-3d-up; }
+  @keyframes spn-3d-up {
+    from { opacity: 0; transform: perspective(1200px) rotateX(18deg) translateY(16px); }
+    to { opacity: 1; transform: perspective(1200px) rotateX(5deg); }
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .spn-3d .spn-detail, .spn-3d .spn-card { animation: none; }
+}

@@ -9,6 +9,7 @@ unmodified copies from the npm registry, except the face model (see below).
 | `plugin/vendor/vis-network/vis-network.min.js` | `vis-network` (`standalone/umd`) | 10.1.2 | Apache-2.0 OR MIT (`LICENSE-APACHE-2.0`, `LICENSE-MIT`) |
 | `plugin/vendor/mediapipe/vision_bundle.js`, `vision_wasm_internal.js`, `vision_wasm_internal.wasm`, `package.json` | `@mediapipe/tasks-vision` | 1.0.1 | Apache-2.0 (`LICENSE`) |
 | `plugin/vendor/mediapipe/blaze_face_short_range.tflite` | MediaPipe face detector model, float16 | 1 | Apache-2.0 |
+| `plugin/vendor/three/three.module.js`, `three.core.js` | `three` (`build/`, ES modules), only for the 3D view | 0.186.1 | MIT (`LICENSE`) |
 
 The npm package of `@mediapipe/tasks-vision` ships no license file and no model. `LICENSE` in
 `vendor/mediapipe/` is the Apache License 2.0 text. The model is not on npm; it was downloaded from
@@ -25,6 +26,8 @@ fc674cfa6cceb27a3b40ff4ea75c204a2d8570fb39b9a627127cf7039e141ad4  vis-network/vi
 e170ee67dd4e16c1a6fcd8840a206687e5a59b22c20e4a902bc445b095454d73  mediapipe/vision_wasm_internal.js
 8da277a733926eacd0474b8704b36742d6ec3231c57a860c5b889dff8f1df886  mediapipe/vision_wasm_internal.wasm
 b4578f35940bf5a1a655214a1cce5cab13eba73c1297cd78e1a04c2380b0152f  mediapipe/blaze_face_short_range.tflite
+9052042d676cb0fdc1ddfefe193053f34b7ac0513a616fdac4535d49987812ea  three/three.module.js
+9edde002b066a9a05676a6127f67735b62baf399bdea529f2f7e31657da769e6  three/three.core.js
 ```
 
 Check them with `cd plugin/vendor && sha256sum -c` and the lines above.

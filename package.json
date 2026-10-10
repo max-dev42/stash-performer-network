@@ -1,6 +1,6 @@
 {
   "name": "stash-performer-network",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "Stash UI plugin: network of performers who appear together",
   "license": "MIT",
@@ -11,6 +11,7 @@
   },
   "devDependencies": {
     "@mediapipe/tasks-vision": "1.0.1",
+    "three": "0.186.1",
     "vis-network": "10.1.2"
   }
 }

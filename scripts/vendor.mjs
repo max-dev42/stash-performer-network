@@ -16,6 +16,11 @@ const FILES = [
   ["@mediapipe/tasks-vision/wasm/vision_wasm_internal.js", "mediapipe/vision_wasm_internal.js"],
   ["@mediapipe/tasks-vision/wasm/vision_wasm_internal.wasm", "mediapipe/vision_wasm_internal.wasm"],
   ["@mediapipe/tasks-vision/package.json", "mediapipe/package.json"],
+  // three.js for the 3D view: the ES module build, loaded with import() only when 3D is opened;
+  // three.module.js imports ./three.core.js from the same folder
+  ["three/build/three.module.js", "three/three.module.js"],
+  ["three/build/three.core.js", "three/three.core.js"],
+  ["three/LICENSE", "three/LICENSE"],
 ];
 
 const check = process.argv.includes("--check");
