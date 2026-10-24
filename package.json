@@ -10,7 +10,7 @@
     "vendor:check": "node scripts/vendor.mjs --check"
   },
   "devDependencies": {
-    "@mediapipe/tasks-vision": "1.0.1",
+    "@mediapipe/tasks-vision": "1.1.1",
     "three": "0.186.1",
     "vis-network": "10.1.2"
   }
