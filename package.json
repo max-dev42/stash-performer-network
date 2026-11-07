@@ -11,7 +11,7 @@
   },
   "devDependencies": {
     "@mediapipe/tasks-vision": "1.0.1",
-    "three": "0.186.1",
+    "three": "0.187.0",
     "vis-network": "10.1.2"
   }
 }
